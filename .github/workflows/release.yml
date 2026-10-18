@@ -1,0 +1,88 @@
+name: Build & Release
+
+on:
+  push:
+    tags: ['v*']          # Release wird bei Tags wie v0.4.7.6 gebaut
+  workflow_dispatch: {}    # manuell ausloesbar
+
+permissions:
+  contents: write          # noetig, um Release-Assets anzuhaengen
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 45  # 0.5.9.19: Netz-Haenger (Download verbindet, liefert aber keine Daten) sonst bis zu 6h Default-Timeout
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Abhaengigkeiten
+        run: pip install PySide6 pywin32 pyinstaller
+
+      - name: Version aus Tag ableiten
+        shell: bash
+        run: echo "APP_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - name: Piper + deutsche Stimme (Thorsten high) buendeln (offline im Installer)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path piper | Out-Null
+          # 0.5.7.1: robuster Download per curl.exe - folgt HF-LFS-Redirects, streamt auf
+          # Platte (kein Speicher-Puffer wie Invoke-WebRequest) und wiederholt bei Abbruch
+          # ("The response ended prematurely"). Mehrere Quellen als Fallback.
+          function FetchOne($url, $out) {
+            # 0.5.9.19: --max-time zusaetzlich zu --connect-timeout, weil connect-timeout NUR die
+            # Verbindungsphase deckt - eine Verbindung, die zwar aufbaut aber dann keine Daten mehr
+            # liefert (Netz-Haenger), lief bisher unbegrenzt weiter (bis zum 6h-Default-Job-Timeout).
+            curl.exe -L --fail --retry 6 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 180 -o $out $url
+            return ($LASTEXITCODE -eq 0)
+          }
+          function Fetch($urls, $out) {
+            foreach ($u in $urls) {
+              Write-Host "Download: $u"
+              if (FetchOne $u $out) { return }
+              Write-Host "  fehlgeschlagen, naechste Quelle ..."
+            }
+            throw "Alle Quellen fehlgeschlagen fuer $out"
+          }
+          # Piper-Binary (MIT, self-contained)
+          Fetch @('https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_windows_amd64.zip') 'piper.zip'
+          Expand-Archive piper.zip -DestinationPath piper_tmp -Force
+          Copy-Item piper_tmp/piper/* piper/ -Recurse -Force
+          # Deutsche Stimme Thorsten (high): 0.5.9.20 - eigenes GitHub-Release-Asset als
+          # bevorzugte Quelle (siehe unten "piper-assets"). Grund: die beiden bisherigen
+          # Hugging-Face-URLs (Tag v1.0.0 und main) sehen nach zwei Quellen aus, landen aber
+          # BEIDE auf demselben CDN-Host us.aws.cdn.hf.co - bei einem HF-CDN-Ausfall (wie
+          # gerade) bringt der "Fallback" also gar nichts. Das eigene Release-Asset liegt auf
+          # GitHubs eigener Infrastruktur und ist unabhaengig von Hugging Faces Verfuegbarkeit.
+          # HF bleibt als letzter Notnagel drin, falls das Asset mal fehlt/veraltet ist.
+          $vown  = 'https://github.com/Pfoetiman76/pitboss/releases/download/piper-assets'
+          $vtag  = 'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/de/de_DE/thorsten/high'
+          $vmain = 'https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/high'
+          Fetch @("$vown/de_DE-thorsten-high.onnx",      "$vtag/de_DE-thorsten-high.onnx",      "$vmain/de_DE-thorsten-high.onnx")      'piper/de_DE-thorsten-high.onnx'
+          Fetch @("$vown/de_DE-thorsten-high.onnx.json", "$vtag/de_DE-thorsten-high.onnx.json", "$vmain/de_DE-thorsten-high.onnx.json") 'piper/de_DE-thorsten-high.onnx.json'
+          # Fail-Loud: Binary + vollstaendige Stimme (nicht abgeschnitten) muessen vorhanden sein
+          if (-not (Test-Path 'piper/piper.exe')) { throw 'piper.exe fehlt nach Download' }
+          $onnx = Get-Item 'piper/de_DE-thorsten-high.onnx' -ErrorAction SilentlyContinue
+          if (-not $onnx)            { throw 'Thorsten-High-Stimme fehlt nach Download' }
+          if ($onnx.Length -lt 20MB) { throw "Thorsten-High-Stimme unvollstaendig ($([math]::Round($onnx.Length/1MB,1)) MB)" }
+          Write-Host ("Stimme OK: {0:N1} MB" -f ($onnx.Length/1MB))
+          Get-ChildItem piper
+
+      - name: PyInstaller-Build
+        run: pyinstaller installer/pitboss_r3e.spec --noconfirm
+
+      - name: Inno Setup installieren
+        run: choco install innosetup -y --no-progress
+
+      - name: Installer bauen
+        run: iscc installer\setup.iss
+
+      - name: Release veroeffentlichen
+        uses: softprops/action-gh-release@v2
+        with:
+          files: installer/Output/PitBossR3E-Setup-*.exe
+          generate_release_notes: true
