@@ -1,0 +1,23 @@
+# Build-Artefakte
+build/
+dist/
+*.spec.bak
+installer/Output/
+__pycache__/
+*.pyc
+*.pyo
+
+# Laufzeit / Nutzerdaten — NIEMALS committen (enthaelt u.a. gemini_config.json = API-Key!)
+exports/
+*.wav
+
+# Umgebungen / IDE
+.venv/
+venv/
+.idea/
+.vscode/
+
+# Piper wird von der CI zur Build-Zeit geladen und gebuendelt - nicht committen
+piper/
+piper.zip
+piper_tmp/
