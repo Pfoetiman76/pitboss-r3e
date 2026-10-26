@@ -724,6 +724,27 @@ class R3EReader:
             res.append(sum(vals) / len(vals) if vals else 0.0)
         return res
 
+    def _sector_bounds_m(self, d: "R3EShared"):
+        """0.2.9: offizielle Sektorgrenzen aus dem Spiel (sector_start_factors x layout_length).
+
+        Liefert die INNEREN Grenzen in Metern (Sektor1-Ende, Sektor2-Ende) als Tuple,
+        oder (), wenn das Spiel keine gueltigen Werte liefert (z.B. -1 oder 0).
+        Faktoren sind Anteile der Streckenlaenge (0..1); 0.0/1.0 und Dubletten
+        werden gefiltert, damit beide Belegungen (Start-Faktoren oder Grenz-Faktoren)
+        funktionieren."""
+        length = _pos(d.layout_length)
+        if length <= 50.0:
+            return ()
+        raw = [_f(getattr(d.sector_start_factors, a), -1.0) for a in ("sector1", "sector2", "sector3")]
+        bounds = []
+        for f in raw:
+            if 0.0 < f < 1.0:
+                m = f * length
+                if 5.0 < m < length - 5.0 and all(abs(m - b) > 5.0 for b in bounds):
+                    bounds.append(m)
+        bounds.sort()
+        return tuple(bounds) if len(bounds) >= 2 else ()
+
     # ----- Hauptfunktion ---------------------------------------------------
     def read_sample(self):
         raw = self._read_raw()
@@ -905,6 +926,8 @@ class R3EReader:
             pit_window_status=_na_int(d.pit_window_status, -1),
             pit_elapsed_s=_pos(d.pit_elapsed_time, -1.0),
             pit_total_s=_pos(d.pit_total_duration, -1.0),
+            track_length_m=_pos(d.layout_length),          # 0.2.9: layout_length aus dem Spiel
+            sector_bounds_m=self._sector_bounds_m(d),      # 0.2.9: offizielle Sektorgrenzen in m
         )
         return self.Sample(**kw)
 
@@ -922,6 +945,10 @@ def make_demo_shared(n_cars: int = 4) -> "R3EShared":
     d.track_name = (c_ubyte * 64)(*b"Nuerburgring")
     d.layout_name = (c_ubyte * 64)(*b"Grand Prix")
     d.layout_length = 5148.0
+    # 0.2.9: offizielle Sektorgrenzen als Start-Faktoren (S2 ab 35 %, S3 ab 68 %)
+    d.sector_start_factors.sector1 = 0.0
+    d.sector_start_factors.sector2 = 0.35
+    d.sector_start_factors.sector3 = 0.68
     d.session_type = 2
     d.session_phase = 5
     d.session_time_duration = 1800.0
@@ -1019,6 +1046,9 @@ def _selftest() -> int:
     check("Zeiten", abs(s.last_lap_time - 118.25) < 1e-4 and abs(s.best_lap_time - 117.9) < 1e-4)
     check("Lap gueltig", s.lap_invalidated is False)
     check("Sektor-Mapping S2->2", s.sector_index == 2)
+    check("Sektorgrenzen aus Spiel", len(getattr(s, "sector_bounds_m", ())) == 2
+          and abs(s.sector_bounds_m[0] - 1801.8) < 1.0 and abs(s.sector_bounds_m[1] - 3500.6) < 1.0, s.sector_bounds_m)
+    check("Streckenlaenge aus Spiel", abs(getattr(s, "track_length_m", 0.0) - 5148.0) < 0.5, s.track_length_m)
     check("S2 kumulativ", abs(s.last_sector2_s - 79.4) < 1e-4, s.last_sector2_s)
     check("Session Rennen", s.session_type == 10 and s.game_phase == 5)
     check("Restzeit", abs(s.session_remaining_s - 1500.0) < 1e-3 and abs(s.session_current_et - 300.0) < 1e-3)
@@ -1179,6 +1209,9 @@ def _probe_text(rd: "R3EReader", d: "R3EShared") -> str:
         f"Sektoren prev  : {[round(float(x), 3) for x in d.sector_time_previous_self]}  lap_prev={d.lap_time_previous_self:.3f}  "
         f"kumulativ={rd._sectors_cumulative} (None=noch unbekannt, bis eine volle Runde vorliegt)",
         f"Sektoren cur   : {[round(float(x), 3) for x in d.sector_time_current_self]}  lap_cur={d.lap_time_current_self:.3f}",
+        f"Sektorgrenzen  : factors=({d.sector_start_factors.sector1:.3f}, {d.sector_start_factors.sector2:.3f}, "
+        f"{d.sector_start_factors.sector3:.3f}) -> innere Grenzen m={[round(b) for b in rd._sector_bounds_m(d)]} "
+        f"(leer = Spiel liefert keine gueltigen Werte, 50-m-Raster bleibt Grundlage)",
         f"Lenkkraft      : steering_force={P.steering_force:.3f}  percentage={P.steering_force_percentage:.3f}",
         f"Schaden        : engine={d.car_damage.engine:.2f} trans={d.car_damage.transmission:.2f} aero={d.car_damage.aerodynamics:.2f} susp={d.car_damage.suspension:.2f}",
         f"Flags          : yellow={d.flags.yellow} blue={d.flags.blue} white={d.flags.white} checkered={d.flags.checkered} black={d.flags.black}",
