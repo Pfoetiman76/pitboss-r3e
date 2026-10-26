@@ -30,7 +30,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.6 Beta"
+APP_VERSION = "0.2.7 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -58,6 +58,92 @@ COACH_TIMING_PATH = EXPORT_DIR / "coach_timing.json"  # 0.4.9.8: Ansage-Vorlauf
 OVERLAY_SIZES_PATH = EXPORT_DIR / "overlay_sizes.json"  # 0.4.9.8: Overlay-Groessen
 BLINDSPOT_CONFIG_PATH = EXPORT_DIR / "blindspot.json"  # 0.5.9.13: Toter-Winkel (Flip)
 HOTKEY_CONFIG_PATH = EXPORT_DIR / "hotkeys.json"  # 0.2.5: frei belegbare Hotkeys (Stream Deck)
+START_MODE_PATH = EXPORT_DIR / "start_mode.json"  # 0.2.7: gemerkter Start-Modus
+
+# ---------------------------------------------------------------------------
+# 0.2.7: Start-Modus-Auswahl. Beim App-Start kann man sich auf einen Zweck
+# festlegen (Aufzeichnung / Overlays / Coach / Alles). Der Modus waehlt nur die
+# Ansicht und öffnet ggf. Overlay-Fenster - es wird nichts automatisch
+# aufgezeichnet oder angesagt. "Merken" speichert die Wahl in start_mode.json.
+# ---------------------------------------------------------------------------
+START_MODES = [
+    ("record", "Aufzeichnung", "Live-Ansicht mit Recorder - per Hotkey Start/Stop, Report/CSV automatisch."),
+    ("overlays", "Overlays", "Reifen-Overlay + Monitor-Overlay sofort öffnen, Live-Ansicht im Hauptfenster."),
+    ("coach", "Coach", "Coach-Ansicht öffnen und Monitor-Overlay zeigen (Ansagen bleiben AUS bis aktiviert)."),
+    ("all", "Alles", "Volles Dashboard mit allen Ansichten - alles wie bisher."),
+]
+
+
+def load_start_mode():
+    """0.2.7: (mode, remember) laden - ungültiges -> (None, False), dann fragt der Dialog."""
+    try:
+        raw = json.loads(START_MODE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return None, False
+    if not isinstance(raw, dict):
+        return None, False
+    mode = raw.get("mode")
+    if mode not in {m[0] for m in START_MODES}:
+        mode = None
+    return mode, bool(raw.get("remember", False))
+
+
+def save_start_mode(mode, remember):
+    """0.2.7: Start-Modus in Dokumente\\PitBoss R3E\\start_mode.json speichern."""
+    try:
+        EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        START_MODE_PATH.write_text(json.dumps({"mode": mode, "remember": bool(remember)}, indent=2), encoding="utf-8")
+        return True
+    except Exception:
+        return False
+
+
+def start_mode_label(mode):
+    for mid, label, _desc in START_MODES:
+        if mid == mode:
+            return label
+    return "Alles"
+
+
+class StartModeDialog(QDialog):
+    """0.2.7: Auswahl-Dialog beim Start: Aufzeichnung, Overlays, Coach oder Alles."""
+
+    def __init__(self, parent=None, remember=False, mode=None):
+        super().__init__(parent)
+        self.mode = mode if mode in {m[0] for m in START_MODES} else None
+        self.remember = bool(remember)
+        self.setWindowTitle("PitBoss R3E – Start-Modus")
+        self.setMinimumWidth(560)
+        layout = QVBoxLayout(self)
+        head = QLabel("Womit willst du starten?")
+        head.setStyleSheet("font-size: 15px; font-weight: 800;")
+        layout.addWidget(head)
+        sub = QLabel("Du kannst jederzeit oben über die Reiter/Navi wechseln - der Modus ist nur der bequeme Startpunkt.")
+        sub.setWordWrap(True)
+        layout.addWidget(sub)
+        grid = QGridLayout()
+        grid.setSpacing(8)
+        for i, (mid, title, desc) in enumerate(START_MODES):
+            btn = QPushButton(title + "\n" + desc)
+            btn.setMinimumHeight(78)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setToolTip(desc)
+            if mid == self.mode:
+                btn.setStyleSheet("font-weight: 800; border: 2px solid #e8212b;")
+            btn.clicked.connect(lambda _c=False, m=mid: self._pick(m))
+            grid.addWidget(btn, i // 2, i % 2)
+        layout.addLayout(grid)
+        self.chk_remember = QCheckBox("Auswahl merken (beim Start nicht mehr fragen)")
+        self.chk_remember.setChecked(bool(remember))
+        layout.addWidget(self.chk_remember)
+        btns = QDialogButtonBox(QDialogButtonBox.Close)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+
+    def _pick(self, mode):
+        self.mode = mode
+        self.remember = self.chk_remember.isChecked()
+        self.accept()
 
 # ---------------------------------------------------------------------------
 # 0.2.5: Frei belegbare Hotkey-Liste. Standard ist F6-F12 wie bisher; jede Aktion
@@ -4147,6 +4233,7 @@ class Main(QMainWindow):
         self.rejected_sample_count = 0
         self.overlay_window = None
         self.tire_overlay_window = None
+        self.start_mode = "all"  # 0.2.7: wird beim Start gesetzt (select_start_mode)
         self.pedal_overlay_window = None  # 0.4.7.1
         self.limit_overlay_window = None  # 0.4.8.7
         self.blindspot_overlay_window = None   # 0.5.9.13: Toter-Winkel-Overlay
@@ -4354,6 +4441,7 @@ class Main(QMainWindow):
         self.act_auto_switch.triggered.connect(lambda _c=False: self.btn_auto_switch.click())
         _more.addAction("Live-Telemetrie-Log (Debug) ein/aus", self.btn_live_log.click)
         _more.addAction("Hotkeys belegen …", self.open_hotkey_settings)  # 0.2.5
+        _more.addAction("Start-Modus wählen …", lambda: self.select_start_mode(force=True))  # 0.2.7
         _more.addSeparator()
         _more.addAction("Export-Ordner öffnen", self.btn_export.click)
         _more.addAction("Aufzeichnung löschen", self.btn_clear.click)
@@ -6517,6 +6605,63 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             self.setup_hotkeys()  # App-Shortcuts mit neuen Tasten neu bauen
         self.log.append("Hotkeys gespeichert: " + hotkey_summary(new_cfg))
         self.status.setText("Hotkeys gespeichert: " + ", ".join(new_cfg.values()))
+
+    def apply_start_mode(self, mode, announce=True):
+        """0.2.7: Start-Modus anwenden - waehlt Ansicht, öffnet ggf. Overlays.
+        Es wird nichts automatisch aufgezeichnet oder angesagt."""
+        mode = mode if mode in {m[0] for m in START_MODES} else "all"
+        self.start_mode = mode
+        if mode == "record":
+            self.show_view("Live")
+        elif mode == "overlays":
+            self.show_view("Live")
+            _tire = getattr(self, "tire_overlay_window", None)
+            if not (_tire is not None and _tire.isVisible()):
+                self.toggle_tire_overlay()
+            _ov = getattr(self, "overlay_window", None)
+            if not (_ov is not None and _ov.isVisible()):
+                self.toggle_overlay()
+        elif mode == "coach":
+            self.show_view("Coach")
+            _ov = getattr(self, "overlay_window", None)
+            if not (_ov is not None and _ov.isVisible()):
+                self.toggle_overlay()
+        else:
+            self.show_view("Dashboard")
+        if announce:
+            hint = {
+                "record": " – " + self.hotkey_config.get("record", "F8") + " startet/stopt die Aufnahme.",
+                "overlays": " – Overlays offen, passen per Hotkey/Griff.",
+                "coach": " – Ansagen bleiben AUS bis du Live-Coach/Kurven-Coach aktivierst.",
+                "all": "",
+            }.get(mode, "")
+            self.log.append("Start-Modus: " + start_mode_label(mode))
+            self.status.setText("Start-Modus: " + start_mode_label(mode) + hint)
+
+    def start_mode_label_current(self) -> str:
+        return start_mode_label(getattr(self, "start_mode", "all"))
+
+    def select_start_mode(self, force=False):
+        """0.2.7: Start-Modus wählen. Bei gemerkter Auswahl direkt anwenden,
+        sonst Dialog. force=True zeigt den Dialog immer (Menüpunkt)."""
+        mode, remember = load_start_mode()
+        if mode and remember and not force:
+            self.apply_start_mode(mode, announce=False)
+            self.status.setText("Start-Modus: " + start_mode_label(mode) + " (ändern: Mehr ▾ → Start-Modus)")
+            return
+        dlg = StartModeDialog(self, remember=bool(remember and mode), mode=mode)
+        try:
+            dlg.setStyleSheet(LIGHT_QSS if getattr(self, "_theme", "dark") == "light" else DARK_QSS)
+        except Exception:
+            pass
+        if dlg.exec() != QDialog.Accepted or not dlg.mode:
+            if not getattr(self, "start_mode", None):
+                self.apply_start_mode("all", announce=False)
+            return
+        self.apply_start_mode(dlg.mode)
+        save_start_mode(dlg.mode, dlg.remember)
+        if dlg.remember:
+            self.log.append("Start-Modus gemerkt: " + start_mode_label(dlg.mode) + " (ändern: Mehr ▾ → Start-Modus)")
 
     def _stable_timing_value(self, vals: List[float]) -> float:
         """Return the most stable official timing value from RaceRoom scoring rows.
@@ -8943,6 +9088,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             "Windows-Global-Hotkeys: " + "/".join(sorted(set(self.hotkey_config.values()))) + " werden zusätzlich per Tastatur-Polling erkannt. 4.2.6 entkoppelt App-Shortcut und Polling gegen Doppeltrigger.",
             f"Samples: {len(self.samples)}",
             ("Aufnahmetyp: Kurzaufnahme/Snapshot" if len(self.samples) < 100 else "Aufnahmetyp: Session/Recording"),
+            f"Start-Modus: {self.start_mode_label_current()}",
             f"Recording-Fahrzeug-Lock: {self.sample_vehicle_label(self.recording_signature) if self.recording_signature else 'nicht aktiv/kein Lock'}",
             f"Verworfene Samples wegen Fahrzeug-/Klassenwechsel/ungültig: {self.rejected_sample_count}",
             "",
@@ -9075,10 +9221,19 @@ def main():
     except Exception:
         pass
     w = Main(); w.show()
+    # 0.2.7: Start-Modus-Auswahl (gemerkte Auswahl wird direkt angewendet)
+    try:
+        w.select_start_mode()
+    except Exception as e:
+        try:
+            w.log.append(f"Start-Modus-Auswahl fehlgeschlagen: {e}")
+        except Exception:
+            pass
     sys.exit(app.exec())
 
 
 if __name__ == "__main__":
     main()
+
 
 
