@@ -1,0 +1,3 @@
+PySide6
+tzdata  # optional: korrekter RPD-Reset um Mitternacht Pacific Time (sonst Fallback auf lokale Tagesgrenze)
+pywin32  # optional (Windows): SAPI5-Sprachausgabe mit niedriger Latenz; ohne pywin32 Fallback auf PowerShell System.Speech
