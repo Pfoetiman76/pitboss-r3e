@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QApplication, QFileDialog, QGroupBox, QGridLayout, QHBoxLayout, QLabel,
     QLineEdit, QMainWindow, QMessageBox, QPushButton, QTableWidget, QComboBox,
     QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget, QTabWidget, QFrame,
-    QCheckBox, QSpinBox, QProgressDialog, QSizeGrip
+    QCheckBox, QSpinBox, QProgressDialog, QSizeGrip, QDialog, QDialogButtonBox
 )
 
 import ctypes
@@ -30,7 +30,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.4 Beta"
+APP_VERSION = "0.2.5 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -57,6 +57,78 @@ DAMAGE_MODEL_PATH = EXPORT_DIR / "damage_model.json"  # 0.4.9.4
 COACH_TIMING_PATH = EXPORT_DIR / "coach_timing.json"  # 0.4.9.8: Ansage-Vorlauf
 OVERLAY_SIZES_PATH = EXPORT_DIR / "overlay_sizes.json"  # 0.4.9.8: Overlay-Groessen
 BLINDSPOT_CONFIG_PATH = EXPORT_DIR / "blindspot.json"  # 0.5.9.13: Toter-Winkel (Flip)
+HOTKEY_CONFIG_PATH = EXPORT_DIR / "hotkeys.json"  # 0.2.5: frei belegbare Hotkeys (Stream Deck)
+
+# ---------------------------------------------------------------------------
+# 0.2.5: Frei belegbare Hotkey-Liste. Standard ist F6-F12 wie bisher; jede Aktion
+# kann im Dialog "Hotkeys belegen ..." auf F1-F24 oder 0-9 geändert werden.
+# Unter Windows laufen die Hotkeys weiterhin ueber das globale Tastatur-Polling
+# (GetAsyncKeyState), damit sie auch funktionieren, waehrend RaceRoom im Fokus ist.
+# ---------------------------------------------------------------------------
+HOTKEY_ACTIONS = [
+    ("tire_overlay", "Reifen-Overlay"),
+    ("auto_bestlap", "Auto-Bestlap AN/AUS"),
+    ("record", "Recording Start/Stop"),
+    ("snapshot", "Snapshot"),
+    ("overlay", "Coach-Overlay"),
+    ("live_coach", "Live-Coach"),
+    ("brake_coach", "Kurven-Coach"),
+]
+DEFAULT_HOTKEYS = {
+    "tire_overlay": "F6", "auto_bestlap": "F7", "record": "F8", "snapshot": "F9",
+    "overlay": "F10", "live_coach": "F11", "brake_coach": "F12",
+}
+HOTKEY_ACTION_KEYS = [a for a, _label in HOTKEY_ACTIONS]
+SUPPORTED_HOTKEY_KEYS = [f"F{i}" for i in range(1, 25)] + [str(d) for d in range(10)]
+
+
+def hotkey_vk(key: str) -> Optional[int]:
+    """0.2.5: Windows-Virtual-Key-Code fuer eine unterstuetzte Hotkey-Taste."""
+    key = str(key or "").strip().upper()
+    if key.startswith("F") and key[1:].isdigit():
+        n = int(key[1:])
+        if 1 <= n <= 24:
+            return 0x70 + (n - 1)  # VK_F1..VK_F24
+    if key.isdigit():
+        return 0x30 + int(key)  # VK_0..VK_9
+    return None
+
+
+def load_hotkey_config() -> dict:
+    """0.2.5: Hotkey-Belegung laden (ungueltige/fehlende Eintraege -> Standard)."""
+    cfg = dict(DEFAULT_HOTKEYS)
+    try:
+        raw = json.loads(HOTKEY_CONFIG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        raw = None
+    if isinstance(raw, dict):
+        for action in HOTKEY_ACTION_KEYS:
+            key = str(raw.get(action, "")).strip().upper()
+            if key in SUPPORTED_HOTKEY_KEYS:
+                cfg[action] = key
+    used = set()
+    for action in HOTKEY_ACTION_KEYS:  # Doppelbelegungen aus alter Config entfernen
+        if cfg[action] in used:
+            cfg[action] = DEFAULT_HOTKEYS[action]
+        used.add(cfg[action])
+    return cfg
+
+
+def save_hotkey_config(cfg: dict):
+    """0.2.5: Hotkey-Belegung in Dokumente\\PitBoss R3E\\hotkeys.json speichern."""
+    try:
+        EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        HOTKEY_CONFIG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+        return True
+    except Exception:
+        return False
+
+
+def hotkey_summary(cfg: dict) -> str:
+    """0.2.5: 'Aktion Taste'-Liste fuer Report/Log."""
+    return " | ".join(f"{cfg.get(a, DEFAULT_HOTKEYS[a])} {label}" for a, label in HOTKEY_ACTIONS)
+
+
 for _d in (EXPORT_DIR, REPORT_DIR, CSV_DIR, REFERENCE_DIR, PROFILE_ASSET_DIR, LOG_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 ASSET_DIR = APP_DIR / "assets"
@@ -4112,7 +4184,8 @@ class Main(QMainWindow):
         self.last_snapshot_hotkey_ts = 0.0
         self.last_report_save_error = ""
         self.last_csv_save_error = ""
-        self.global_hotkey_state = {"F6": False, "F7": False, "F8": False, "F9": False, "F10": False, "F11": False, "F12": False}
+        self.hotkey_config = load_hotkey_config()  # 0.2.5: frei belegbare Hotkeys
+        self.global_hotkey_state = {k: False for k in self.hotkey_config.values()}
         self.last_tire_overlay_hotkey_ts = 0.0
         self.last_live_sample = None
         self.live_log_enabled = False  # 0.5.9.26: Live-Telemetrie-Log, unabhaengig vom Recording
@@ -4273,13 +4346,14 @@ class Main(QMainWindow):
         _more.addAction("Referenz exportieren", self.btn_ref_export.click)
         _more.addAction("Referenz importieren", self.btn_ref_import.click)
         _more.addSeparator()
-        self.act_auto_bestlap = _more.addAction("Auto-Bestlap-Export (F7)")
+        self.act_auto_bestlap = _more.addAction("Auto-Bestlap-Export (" + self.hotkey_config.get("auto_bestlap", "F7") + ")")
         self.act_auto_bestlap.setCheckable(True)
         self.act_auto_bestlap.triggered.connect(lambda _c=False: self.btn_auto_bestlap.click())
         self.act_auto_switch = _more.addAction("Auto-Wechsel bei Strecke/Fahrzeug")
         self.act_auto_switch.setCheckable(True)
         self.act_auto_switch.triggered.connect(lambda _c=False: self.btn_auto_switch.click())
         _more.addAction("Live-Telemetrie-Log (Debug) ein/aus", self.btn_live_log.click)
+        _more.addAction("Hotkeys belegen …", self.open_hotkey_settings)  # 0.2.5
         _more.addSeparator()
         _more.addAction("Export-Ordner öffnen", self.btn_export.click)
         _more.addAction("Aufzeichnung löschen", self.btn_clear.click)
@@ -4389,7 +4463,7 @@ class Main(QMainWindow):
             "Aktuelle Runde", "Track m", "Speed", "Gang", "Fuel", "Letzte Runde", "Beste Runde", "Status"
         ])
         self.live_summary.horizontalHeader().setStretchLastSection(True)
-        live_layout.addWidget(self._hint("Live-Übersicht: Runden- und Statusdaten. Overlays über das Menü oben, F10 (Monitor) und F6 (Reifen)."))
+        live_layout.addWidget(self._hint("Live-Übersicht: Runden- und Statusdaten. Overlays über das Menü oben, " + self.hotkey_config.get("overlay", "F10") + " (Monitor) und " + self.hotkey_config.get("tire_overlay", "F6") + " (Reifen)."))
         self.sector_label = QLabel("Sektorzeiten: warte auf erste vollst\u00e4ndige Runde \u2026")  # 0.4.9.0
         self.sector_label.setWordWrap(True)
         live_layout.addWidget(self.sector_label)
@@ -6128,7 +6202,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
     def set_auto_bestlap_ui(self):
         state = "AN" if self.auto_bestlap_export_enabled else "AUS"
         self.btn_auto_bestlap.setText(f"Auto-Bestlap: {state}")
-        self.btn_auto_bestlap.setToolTip("F7: Auto-Bestlap AN/AUS")
+        self.btn_auto_bestlap.setToolTip(self.hotkey_config.get("auto_bestlap", "F7") + ": Auto-Bestlap AN/AUS")
         _act = getattr(self, "act_auto_bestlap", None)
         if _act is not None:
             _act.setChecked(bool(self.auto_bestlap_export_enabled))
@@ -6242,6 +6316,16 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         # Unter Windows nutzen wir ausschließlich den Polling-Hotkey.
         # Sonst feuern QShortcut + GetAsyncKeyState parallel und Stream Deck kann doppelt auslösen
         # oder Overlay-Fenster scheinbar doppelt öffnen.
+        # 0.2.5: Die Tasten kommen aus der frei belegbaren Konfiguration (hotkeys.json).
+        for _attr in ("shortcut_tire_overlay", "shortcut_auto_bestlap", "shortcut_record",
+                      "shortcut_snapshot", "shortcut_overlay", "shortcut_live_coach",
+                      "shortcut_brake_coach"):
+            _old = getattr(self, _attr, None)
+            if _old is not None:
+                try:
+                    _old.deleteLater()
+                except Exception:
+                    pass
         if sys.platform.startswith("win"):
             self.shortcut_tire_overlay = None
             self.shortcut_auto_bestlap = None
@@ -6250,31 +6334,24 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             self.shortcut_overlay = None
             self.shortcut_live_coach = None
             self.shortcut_brake_coach = None
-            self.log.append("App-Hotkeys unter Windows deaktiviert: nutze nur Windows-Global-Polling gegen Doppeltrigger. F6=Reifen-Overlay.")
+            self.log.append("App-Hotkeys unter Windows deaktiviert: nutze nur Windows-Global-Polling gegen Doppeltrigger. " + self.hotkey_config.get("tire_overlay", "F6") + "=Reifen-Overlay.")
             return
 
-        self.shortcut_tire_overlay = QShortcut(QKeySequence("F6"), self)
-        self.shortcut_tire_overlay.setContext(Qt.ApplicationShortcut)
-        self.shortcut_tire_overlay.activated.connect(self.toggle_tire_overlay_hotkey)
-        self.shortcut_auto_bestlap = QShortcut(QKeySequence("F7"), self)
-        self.shortcut_auto_bestlap.setContext(Qt.ApplicationShortcut)
-        self.shortcut_auto_bestlap.activated.connect(self.toggle_auto_bestlap_hotkey)
-        self.shortcut_record = QShortcut(QKeySequence("F8"), self)
-        self.shortcut_record.setContext(Qt.ApplicationShortcut)
-        self.shortcut_record.activated.connect(self.toggle_recording_hotkey)
-        self.shortcut_snapshot = QShortcut(QKeySequence("F9"), self)
-        self.shortcut_snapshot.setContext(Qt.ApplicationShortcut)
-        self.shortcut_snapshot.activated.connect(self.snapshot_hotkey)
-        self.shortcut_overlay = QShortcut(QKeySequence("F10"), self)
-        self.shortcut_overlay.setContext(Qt.ApplicationShortcut)
-        self.shortcut_overlay.activated.connect(self.toggle_overlay_hotkey)
-        self.shortcut_live_coach = QShortcut(QKeySequence("F11"), self)
-        self.shortcut_live_coach.setContext(Qt.ApplicationShortcut)
-        self.shortcut_live_coach.activated.connect(self.toggle_live_coach_hotkey)
-        self.shortcut_brake_coach = QShortcut(QKeySequence("F12"), self)
-        self.shortcut_brake_coach.setContext(Qt.ApplicationShortcut)
-        self.shortcut_brake_coach.activated.connect(self.toggle_brake_coach_hotkey)
-        self.log.append("App-Hotkeys aktiv: F6 Reifen-Overlay · F7 Auto-Bestlap AN/AUS · F8 Recording Start/Stop · F9 Snapshot · F10 Coach-Overlay · F11 Live-Coach · F12 Kurven-Coach")
+        bindings = [
+            ("shortcut_tire_overlay", "tire_overlay", self.toggle_tire_overlay_hotkey),
+            ("shortcut_auto_bestlap", "auto_bestlap", self.toggle_auto_bestlap_hotkey),
+            ("shortcut_record", "record", self.toggle_recording_hotkey),
+            ("shortcut_snapshot", "snapshot", self.snapshot_hotkey),
+            ("shortcut_overlay", "overlay", self.toggle_overlay_hotkey),
+            ("shortcut_live_coach", "live_coach", self.toggle_live_coach_hotkey),
+            ("shortcut_brake_coach", "brake_coach", self.toggle_brake_coach_hotkey),
+        ]
+        for attr, action, handler in bindings:
+            sc = QShortcut(QKeySequence(self.hotkey_config.get(action, DEFAULT_HOTKEYS[action])), self)
+            sc.setContext(Qt.ApplicationShortcut)
+            sc.activated.connect(handler)
+            setattr(self, attr, sc)
+        self.log.append("App-Hotkeys aktiv: " + hotkey_summary(self.hotkey_config))
 
     def toggle_recording_hotkey(self):
         # F8 kann bei Windows/Stream Deck durch Key-Repeat doppelt auslösen.
@@ -6356,7 +6433,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             self.global_hotkey_timer.setInterval(60)
             self.global_hotkey_timer.timeout.connect(self.poll_windows_hotkeys)
             self.global_hotkey_timer.start()
-            self.log.append("Windows-Global-Hotkeys aktiv: F6/F7/F8/F9/F10 funktionieren auch wenn RaceRoom im Fokus ist.")
+            self.log.append("Windows-Global-Hotkeys aktiv: " + "/".join(sorted(set(self.hotkey_config.values()))) + " funktionieren auch wenn RaceRoom im Fokus ist.")
         except Exception as e:
             self.log.append(f"Windows-Global-Hotkeys konnten nicht aktiviert werden: {e}")
 
@@ -6367,27 +6444,79 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             return False
 
     def poll_windows_hotkeys(self):
-        # VK codes: F6=0x75, F7=0x76, F8=0x77, F9=0x78, F10=0x79, F11=0x7A, F12=0x7B
-        mapping = {"F6": 0x75, "F7": 0x76, "F8": 0x77, "F9": 0x78, "F10": 0x79, "F11": 0x7A, "F12": 0x7B}
-        for key, vk in mapping.items():
+        # 0.2.5: Tasten kommen aus der frei belegbaren Hotkey-Konfiguration.
+        # VK codes: F1=0x70..F24=0x87, 0=0x30..9=0x39 (siehe hotkey_vk()).
+        handlers = {
+            "tire_overlay": self.toggle_tire_overlay_hotkey,
+            "auto_bestlap": self.toggle_auto_bestlap_hotkey,
+            "record": self.toggle_recording_hotkey,
+            "snapshot": self.snapshot_hotkey,
+            "overlay": self.toggle_overlay_hotkey,
+            "live_coach": self.toggle_live_coach_hotkey,
+            "brake_coach": self.toggle_brake_coach_hotkey,
+        }
+        for action, key in self.hotkey_config.items():
+            vk = hotkey_vk(key)
+            if vk is None:
+                continue
             down = self._vk_down(vk)
             was_down = self.global_hotkey_state.get(key, False)
             if down and not was_down:
-                if key == "F6":
-                    self.toggle_tire_overlay_hotkey()
-                elif key == "F7":
-                    self.toggle_auto_bestlap_hotkey()
-                elif key == "F8":
-                    self.toggle_recording_hotkey()
-                elif key == "F9":
-                    self.snapshot_hotkey()
-                elif key == "F10":
-                    self.toggle_overlay_hotkey()
-                elif key == "F11":
-                    self.toggle_live_coach_hotkey()
-                elif key == "F12":
-                    self.toggle_brake_coach_hotkey()
+                handler = handlers.get(action)
+                if handler is not None:
+                    handler()
             self.global_hotkey_state[key] = down
+
+    def open_hotkey_settings(self):
+        """0.2.5: Frei belegbare Hotkey-Liste fuer Stream Deck/Tastatur.
+
+        Erlaubt sind F1-F24 und 0-9. Jede Taste darf nur einer Aktion zugeordnet
+        sein. Die Belegung wird in Dokumente\\PitBoss R3E\\hotkeys.json gespeichert
+        und gilt sofort (Windows-Polling liest sie live, App-Shortcuts werden neu gebaut).
+        """
+        cfg = dict(self.hotkey_config)
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Hotkeys belegen")
+        dlg.setMinimumWidth(420)
+        layout = QVBoxLayout(dlg)
+        info = QLabel("Frei belegbare Hotkeys für Stream Deck/Tastatur. Erlaubt: F1–F24 und 0–9. Jede Taste nur einmal.")
+        info.setWordWrap(True)
+        layout.addWidget(info)
+        combos = {}
+        for action, label in HOTKEY_ACTIONS:
+            row = QHBoxLayout()
+            lab = QLabel(label + ":")
+            lab.setMinimumWidth(180)
+            row.addWidget(lab)
+            combo = QComboBox()
+            combo.addItems(SUPPORTED_HOTKEY_KEYS)
+            combo.setCurrentText(cfg.get(action, DEFAULT_HOTKEYS[action]))
+            combo.setMinimumWidth(120)
+            row.addWidget(combo)
+            row.addStretch(1)
+            layout.addLayout(row)
+            combos[action] = combo
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        layout.addWidget(btns)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        new_cfg = {action: combos[action].currentText() for action, _label in HOTKEY_ACTIONS}
+        used = {}
+        for action, key in new_cfg.items():
+            if key in used:
+                QMessageBox.warning(self, "Hotkeys", f"Taste {key} ist doppelt belegt ({used[key]} und {action}). Nichts gespeichert.")
+                return
+            used[key] = action
+        self.hotkey_config = new_cfg
+        if not save_hotkey_config(new_cfg):
+            self.log.append("Hotkeys konnten nicht gespeichert werden (Datei nicht schreibbar).")
+        self.global_hotkey_state = {k: False for k in new_cfg.values()}
+        if not sys.platform.startswith("win"):
+            self.setup_hotkeys()  # App-Shortcuts mit neuen Tasten neu bauen
+        self.log.append("Hotkeys gespeichert: " + hotkey_summary(new_cfg))
+        self.status.setText("Hotkeys gespeichert: " + ", ".join(new_cfg.values()))
 
     def _stable_timing_value(self, vals: List[float]) -> float:
         """Return the most stable official timing value from RaceRoom scoring rows.
@@ -7176,7 +7305,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         self.snapshot(silent=True)  # 0.4.8.1: Snapshot automatisch bei Start
         self._set_rec_ui(True)
         self.log.append("🔴 Recording gestartet: Auto-Report/CSV werden beim Stop automatisch gespeichert.")
-        self.status.setText("🔴 RECORDING AKTIV – F8 stoppt und speichert Report/CSV automatisch.")
+        self.status.setText("🔴 RECORDING AKTIV – " + self.hotkey_config.get("record", "F8") + " stoppt und speichert Report/CSV automatisch.")
         self.refresh_dashboard()
 
     def stop_recording(self):
@@ -8644,8 +8773,11 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         lines.append("Lap | Status | Grund | Samples | Coverage m | Dauer [m]:ss.000 | Max Speed | Avg Speed | Max Brake | Fuel Used")
         for l in self.lap_summaries:
             status = "REFERENZ" if self.reference_lap and l.lap_number == self.reference_lap.lap_number else ("gültig" if l.is_clean else "ausgeschlossen")
-            t = self.lap_time_for_report(l)
-            lines.append(f"{l.lap_number} | {status} | {l.reason} | {l.samples}/{l.valid_samples} | {l.coverage_m:.1f} | {fmt_lap_time(t)} | {l.max_speed:.1f} | {l.avg_speed:.1f} | {l.max_brake:.3f} | {l.fuel_used_l:.3f}")
+            # 0.2.5: Unvollständige Runden zeigen keine Zeit mehr. Die offizielle Scoring-Zeit
+            # (lap_time_previous_self) wird erst auf der Folgerunde gelesen und gehört dann zur
+            # Vorrunde - für eine nicht komplette Runde ist sie irreführend (Lap 9 zeigte Lap 8).
+            t_txt = fmt_lap_time(self.lap_time_for_report(l)) if l.is_complete else "—"
+            lines.append(f"{l.lap_number} | {status} | {l.reason} | {l.samples}/{l.valid_samples} | {l.coverage_m:.1f} | {t_txt} | {l.max_speed:.1f} | {l.avg_speed:.1f} | {l.max_brake:.3f} | {l.fuel_used_l:.3f}")
         return lines
 
     def input_metrics_for_lap(self, lap: LapSummary) -> dict:
@@ -8807,8 +8939,8 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             f"Fahrer-/Hardware-Profil: {self.hardware_profile_summary()}",
             f"Externe Referenz: {self.external_reference_label() if self.external_reference else 'nicht geladen'}",
             f"Auto-Bestlap-Export: {'AN' if self.auto_bestlap_export_enabled else 'AUS'} | Live-Puffer: {'AN' if self.auto_bestlap_live_mode else 'AUS'}" + (f" | Lap {self.auto_bestlap_lap_number} | {fmt_lap_time(self.auto_bestlap_time_s)} | {self.auto_bestlap_export_path}" if self.auto_bestlap_export_path else ""),
-            "Hotkeys: F6 Reifen-Overlay | F7 Auto-Bestlap AN/AUS | F8 Recording Start/Stop | F9 Snapshot | F10 Coach-Overlay | Windows: nur Polling, keine parallelen App-Shortcuts",
-            "Windows-Global-Hotkeys: F6/F7/F8/F9/F10 werden zusätzlich per Tastatur-Polling erkannt. 4.2.6 entkoppelt App-Shortcut und Polling gegen Doppeltrigger.",
+            "Hotkeys: " + hotkey_summary(self.hotkey_config) + " | Windows: nur Polling, keine parallelen App-Shortcuts",
+            "Windows-Global-Hotkeys: " + "/".join(sorted(set(self.hotkey_config.values()))) + " werden zusätzlich per Tastatur-Polling erkannt. 4.2.6 entkoppelt App-Shortcut und Polling gegen Doppeltrigger.",
             f"Samples: {len(self.samples)}",
             ("Aufnahmetyp: Kurzaufnahme/Snapshot" if len(self.samples) < 100 else "Aufnahmetyp: Session/Recording"),
             f"Recording-Fahrzeug-Lock: {self.sample_vehicle_label(self.recording_signature) if self.recording_signature else 'nicht aktiv/kein Lock'}",
@@ -8948,4 +9080,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
