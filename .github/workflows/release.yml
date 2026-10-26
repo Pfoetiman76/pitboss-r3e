@@ -75,11 +75,31 @@ jobs:
       - name: PyInstaller-Build
         run: pyinstaller installer/pitboss_r3e.spec --noconfirm
 
+      # 0.2.6: Groesse des Builds dokumentieren (Verschlanke-Kontrolle)
+      - name: Dist-Groesse ausgeben
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem dist\\PitBossR3E -Recurse -File
+          $sum = ($files | Measure-Object Length -Sum).Sum
+          Write-Host ("dist gesamt: {0:N1} MB ({1} Dateien)" -f ($sum/1MB), $files.Count)
+          Write-Host "Die 25 groessten Dateien:"
+          $files | Sort-Object Length -Descending | Select-Object -First 25 |
+            ForEach-Object { Write-Host ("{0,10:N2} MB  {1}" -f ($_.Length/1MB), $_.FullName.Replace('$PWD\\', '')) }
+          $piper = $files | Where-Object { $_.FullName -match 'piper' }
+          if ($piper) {
+            $psum = ($piper | Measure-Object Length -Sum).Sum
+            Write-Host ("davon piper/Stimme: {0:N1} MB" -f ($psum/1MB))
+          }
+
       - name: Inno Setup installieren
         run: choco install innosetup -y --no-progress
 
-      - name: Installer bauen
-        run: iscc installer\setup.iss
+      - name: Installer bauen (Voll + Lite)
+        shell: pwsh
+        run: |
+          iscc installer\\setup.iss
+          iscc /DLITE installer\\setup.iss
+          Get-ChildItem installer\\Output | ForEach-Object { Write-Host ("{0,10:N2} MB  {1}" -f ($_.Length/1MB), $_.Name) }
 
       - name: Release veroeffentlichen
         uses: softprops/action-gh-release@v2
