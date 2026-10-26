@@ -79,12 +79,12 @@ jobs:
       - name: Dist-Groesse ausgeben
         shell: pwsh
         run: |
-          $files = Get-ChildItem dist\\PitBossR3E -Recurse -File
+          $files = Get-ChildItem dist\PitBossR3E -Recurse -File
           $sum = ($files | Measure-Object Length -Sum).Sum
           Write-Host ("dist gesamt: {0:N1} MB ({1} Dateien)" -f ($sum/1MB), $files.Count)
           Write-Host "Die 25 groessten Dateien:"
           $files | Sort-Object Length -Descending | Select-Object -First 25 |
-            ForEach-Object { Write-Host ("{0,10:N2} MB  {1}" -f ($_.Length/1MB), $_.FullName.Replace('$PWD\\', '')) }
+            ForEach-Object { Write-Host ("{0,10:N2} MB  {1}" -f ($_.Length/1MB), $_.FullName.Replace('$PWD\', '')) }
           $piper = $files | Where-Object { $_.FullName -match 'piper' }
           if ($piper) {
             $psum = ($piper | Measure-Object Length -Sum).Sum
@@ -97,9 +97,9 @@ jobs:
       - name: Installer bauen (Voll + Lite)
         shell: pwsh
         run: |
-          iscc installer\\setup.iss
-          iscc /DLITE installer\\setup.iss
-          Get-ChildItem installer\\Output | ForEach-Object { Write-Host ("{0,10:N2} MB  {1}" -f ($_.Length/1MB), $_.Name) }
+          iscc installer\setup.iss
+          iscc /DLITE installer\setup.iss
+          Get-ChildItem installer\Output | ForEach-Object { Write-Host ("{0,10:N2} MB  {1}" -f ($_.Length/1MB), $_.Name) }
 
       - name: Release veroeffentlichen
         uses: softprops/action-gh-release@v2
