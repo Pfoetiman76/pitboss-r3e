@@ -708,6 +708,7 @@ class TrackMapWidget(QWidget):
         self.segment_deltas: List[SegmentDelta] = []
         self.problem_zones = []
         self.heatmap_mode = False
+        self.sector_bounds: List[float] = []  # 0.2.9: offizielle Sektorgrenzen (m), leer = unbekannt
         self.heat_metric = "delta"  # 0.4.8.8/0.4.8.9: "delta" | "pedal" | "line"
         self._line_idx = []        # 0.4.8.9: [(dist, x, z, path_lateral)] der Referenz
         self._path_lat_ok = False  # mPathLateral/mTrackEdge liefern Daten?
@@ -792,6 +793,46 @@ class TrackMapWidget(QWidget):
         self.heatmap_mode = True
         self._build_line_index()  # 0.4.8.9
         self.update()
+
+    def set_sector_info(self, bounds):
+        """0.2.9: offizielle Sektorgrenzen (Meter) fuer Grenzmarken + Labels auf der Map."""
+        b = [float(x) for x in (bounds or []) if float(x) > 0.0]
+        self.sector_bounds = b[:2] if len(b) >= 2 else []
+        self.update()
+
+    def _sector_label_for_m(self, m: float) -> str:
+        """0.2.9: S1/S2/S3 fuer eine Meter-Position anhand der offiziellen Grenzen."""
+        if len(self.sector_bounds) >= 2:
+            if m < self.sector_bounds[0]:
+                return "S1"
+            if m < self.sector_bounds[1]:
+                return "S2"
+            return "S3"
+        return ""
+
+    def _draw_sector_marks(self, painter, map_pt):
+        """0.2.9: offizielle Sektorgrenzen als weisse X-Marken mit S1|S2-Label."""
+        if len(self.sector_bounds) < 2:
+            return
+        pool = [s for s in (self.compare_samples or self.reference_samples or self.samples)
+                if abs(s.pos_x) > 0.001 or abs(s.pos_z) > 0.001]
+        if not pool:
+            return
+        for i, b in enumerate(self.sector_bounds[:2]):
+            near = min(pool, key=lambda s: abs(s.lap_dist_m - b))
+            if abs(near.lap_dist_m - b) > 60.0:
+                continue
+            pt = map_pt(near.pos_x, near.pos_z)
+            painter.setPen(QPen(QColor(255, 255, 255, 225), 2))
+            painter.drawLine(QPointF(pt.x() - 8, pt.y() - 8), QPointF(pt.x() + 8, pt.y() + 8))
+            painter.drawLine(QPointF(pt.x() - 8, pt.y() + 8), QPointF(pt.x() + 8, pt.y() - 8))
+            lbl = f"S{i + 1}|S{i + 2}"
+            r = QRectF(pt.x() + 10, pt.y() - 32, 62, 18)
+            painter.setBrush(QBrush(QColor(10, 10, 10, 175)))
+            painter.setPen(QPen(QColor(255, 255, 255), 1))
+            painter.drawRoundedRect(r, 4, 4)
+            painter.setPen(QColor(255, 255, 255))
+            painter.drawText(r.adjusted(4, 0, -2, 0), Qt.AlignVCenter | Qt.AlignLeft, lbl)
 
     def _all_position_rows(self):
         # 0.2.0: Ergebnis cachen - paintEvent lief bisher bei jedem Repaint ueber alle Samples.
@@ -990,7 +1031,8 @@ class TrackMapWidget(QWidget):
                 painter.drawEllipse(pt, 18, 18)
                 painter.setPen(QColor(255, 255, 255))
                 painter.drawText(QRectF(pt.x() - 12, pt.y() - 13, 24, 26), Qt.AlignCenter, str(idx))
-                label = f"Zone {idx}: {start_m}-{end_m} m"
+                sec = self._sector_label_for_m(start_m)  # 0.2.9: offizieller Sektor der Zone
+                label = f"Zone {idx}: {start_m}-{end_m} m" + (f" ({sec})" if sec else "")
                 label_rect = QRectF(pt.x() + 20, pt.y() - 16, 135, 30)
                 painter.setBrush(QBrush(QColor(10, 10, 10, 185)))
                 painter.setPen(QPen(QColor(255, 90, 80), 1))
@@ -1005,7 +1047,8 @@ class TrackMapWidget(QWidget):
 
             painter.setPen(QColor(230, 230, 230))
             painter.drawText(QRectF(8, 8, self.width() - 16, 44), Qt.AlignLeft,
-                             "Heatmap: dicke rote Zonen + Nummern = Coach-Fokus | Grau=Referenz | Grün=besser")
+                             "Heatmap: dicke rote Zonen + Nummern = Coach-Fokus | Grau=Referenz | Grün=besser | X=Sektorgrenze")
+            self._draw_sector_marks(painter, map_pt)
         else:
             pts = self.samples
             max_speed = max([s.speed_kmh for s in pts] + [1.0])
@@ -1023,7 +1066,8 @@ class TrackMapWidget(QWidget):
             lp = map_pt(last.pos_x, last.pos_z)
             painter.drawEllipse(lp, 5, 5)
             painter.setPen(QColor(220, 220, 220))
-            painter.drawText(QRectF(8, 8, self.width() - 16, 20), Qt.AlignLeft, f"Samples: {len(self.samples)} | Speed max: {max_speed:.1f} km/h | Rot=Bremse | Grün=Gas")
+            painter.drawText(QRectF(8, 8, self.width() - 16, 20), Qt.AlignLeft, f"Samples: {len(self.samples)} | Speed max: {max_speed:.1f} km/h | Rot=Bremse | Grün=Gas | X=Sektorgrenze")
+            self._draw_sector_marks(painter, map_pt)
 
 
 def _load_overlay_sizes():
@@ -2131,7 +2175,9 @@ class OverlayWindow(OverlayStyleMixin, QWidget):
             zones = main.grouped_problem_zones() if main.segment_deltas else []
             if zones:
                 z = zones[0]
-                self.set_value("Coach", f"Zone {z[0]}-{z[1]} m · {z[2]:+.3f}s")
+                sec = main.sector_name_for_m(z[0])  # 0.2.9
+                sec_txt = f" ({sec})" if sec else ""
+                self.set_value("Coach", f"Zone {z[0]}-{z[1]} m{sec_txt} · {z[2]:+.3f}s")
             else:
                 self.set_value("Coach", "keine große Verlustzone")
         else:
@@ -6193,6 +6239,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             if self.recording and self._tm_tick % 4 == 0 and len(self.samples) != getattr(self, "_tm_len", -1):
                 self._tm_len = len(self.samples)
                 self.trackmap.set_samples(self.samples)
+                self.trackmap.set_sector_info(self.official_sector_bounds())  # 0.2.9
         elif name == "Reifen":
             if s is not None:
                 self.update_tire_table(s)
@@ -6226,7 +6273,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         zones = self.grouped_problem_zones() if self.segment_deltas else []
         if zones:
             z = zones[0]
-            self._dash_focus_txt = f"Zone 1 | {z[0]}-{z[1]} m | {z[2]:+.3f} s"
+            self._dash_focus_txt = f"Zone 1 | {z[0]}-{z[1]} m ({self.sector_name_for_m(z[0]) or '?'}) | {z[2]:+.3f} s"
         else:
             self._dash_focus_txt = "nach Rundenvergleich"
         lines = self.coach_report_lines()
@@ -7435,6 +7482,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         if not silent:
             self.add_sample_to_table(s)
             self.trackmap.set_samples(self.samples)
+            self.trackmap.set_sector_info(self.official_sector_bounds())  # 0.2.9
             self.status.setText(f"Letzter Snapshot: {s.track} | {s.vehicle_name} | {s.speed_kmh:.1f} km/h | Gear {s.gear} | Fuel {s.fuel_l:.2f} L")
             self.refresh_dashboard()
         if not silent:
@@ -7466,6 +7514,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         self.auto_export_bestlap_reference()
         ref_samples = self.samples_for_reference_lap()
         self.trackmap.set_samples(ref_samples if ref_samples else self.samples)
+        self.trackmap.set_sector_info(self.official_sector_bounds())  # 0.2.9
         self.update_segments()
         self.update_lap_compare()
         self.update_heatmap()
@@ -8152,6 +8201,17 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         key = max(counts.items(), key=lambda kv: kv[1])[0]
         return [k * 10.0 for k in key]
 
+    def sector_name_for_m(self, m: float) -> str:
+        """0.2.9: offizieller Sektor (S1/S2/S3) fuer eine Meter-Position; '' = Grenzen unbekannt."""
+        b = self.official_sector_bounds()
+        if len(b) >= 2:
+            if m < float(b[0]):
+                return "S1"
+            if m < float(b[1]):
+                return "S2"
+            return "S3"
+        return ""
+
     def lap_compare_report_lines(self) -> List[str]:
         if not self.segment_deltas:
             self.update_lap_compare()
@@ -8192,7 +8252,9 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         if not grouped:
             lines.append("Keine zusammenhängende Problemzone erkannt.")
         for i, (start, end, total_loss, spd, brk, thr, cause, advice) in enumerate(grouped[:8], 1):
-            lines.append(f"{i}. {start}-{end} m | Summe {total_loss:+.3f} s | {cause} | Speed {spd:+.1f} km/h | Brake {brk:+.3f} | Gas {thr:+.3f}")
+            sec = self.sector_name_for_m(start)  # 0.2.9: offizieller Sektor der Zone
+            sec_txt = f" ({sec})" if sec else ""
+            lines.append(f"{i}. {start}-{end} m{sec_txt} | Summe {total_loss:+.3f} s | {cause} | Speed {spd:+.1f} km/h | Brake {brk:+.3f} | Gas {thr:+.3f}")
 
         # 0.2.9: offizielle Spiel-Sektoren (sector_start_factors) statt nur schematischem Raster
         bounds = self.official_sector_bounds()
@@ -8298,7 +8360,9 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         if zones:
             lines.append("Markierte Coach-Zonen auf der Map:")
             for i, z in enumerate(zones[:5], 1):
-                lines.append(f"Zone {i}: {z[0]}-{z[1]} m | {z[2]:+.3f} s | {z[6]}")
+                sec = self.sector_name_for_m(z[0])  # 0.2.9: offizieller Sektor der Zone
+                sec_txt = f" ({sec})" if sec else ""
+                lines.append(f"Zone {i}: {z[0]}-{z[1]} m{sec_txt} | {z[2]:+.3f} s | {z[6]}")
         else:
             lines.append("Keine markierte Coach-Zone vorhanden.")
         return lines
@@ -8327,16 +8391,20 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         lines.append("Zone | Priorität | Bereich | Verlust | Diagnose | Handlung")
         for i, (start, end, total_loss, spd, brk, thr, cause, advice) in enumerate(losses[:5], 1):
             prio = "HOCH" if total_loss >= 0.35 else ("MITTEL" if total_loss >= 0.18 else "NIEDRIG")
+            sec = self.sector_name_for_m(start)  # 0.2.9: offizieller Sektor der Zone
+            sec_txt = f" ({sec})" if sec else ""
             lines.append(
-                f"Zone {i} | {prio} | {start}-{end} m | {total_loss:+.3f} s | "
+                f"Zone {i} | {prio} | {start}-{end} m{sec_txt} | {total_loss:+.3f} s | "
                 f"{cause}; Speed {spd:+.1f} km/h, Brake {brk:+.3f}, Gas {thr:+.3f} | {advice}"
             )
         # One concise driver summary.
         main = losses[0]
+        sec = self.sector_name_for_m(main[0])  # 0.2.9: offizieller Sektor der Hauptzone
+        sec_txt = f" ({sec})" if sec else ""
         lines.append("")
         lines.append("Kurzfazit:")
         lines.append(
-            f"Der größte kumulierte Verlust liegt in Zone 1 bei {main[0]}-{main[1]} m ({main[2]:+.3f} s). "
+            f"Der größte kumulierte Verlust liegt in Zone 1 bei {main[0]}-{main[1]} m{sec_txt} ({main[2]:+.3f} s). "
             f"Hauptthema: {main[6]}. Nächster Run: nur diesen Bereich bewusst sauberer fahren."
         )
         lines.append("")
@@ -8450,6 +8518,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         zones = self.grouped_problem_zones() if self.segment_deltas else []
         if ref_samples and cmp_samples and self.segment_deltas:
             self.heatmap.set_heatmap(self.samples, ref_samples, cmp_samples, self.segment_deltas, zones)
+            self.heatmap.set_sector_info(self.official_sector_bounds())  # 0.2.9
             total = sum(d.delta_s for d in self.segment_deltas)
             zeroish = abs(total) < 0.001 and not zones
             self.heatmap_note.setText(
@@ -8460,6 +8529,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         else:
             base = cmp_samples or ref_samples or self.samples
             self.heatmap.set_samples(base)
+            self.heatmap.set_sector_info(self.official_sector_bounds())  # 0.2.9
             reason = "Noch keine Heatmap möglich: Referenz und gültige Vergleichsrunde nötig."
             if ref_samples and not cmp_samples:
                 reason = "Referenz vorhanden, aber noch keine gültige Vergleichsrunde für Heatmap."
@@ -8475,7 +8545,9 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         for i, (start, end, total_loss, spd, brk, thr, cause, advice) in enumerate(zones[:8], 1):
             prio = "HOCH" if total_loss >= 0.35 else ("MITTEL" if total_loss >= 0.18 else "NIEDRIG")
             row = self.zone_table.rowCount(); self.zone_table.insertRow(row)
-            vals = [f"Zone {i}", f"{start}-{end} m", f"{total_loss:+.3f} s", prio, cause, advice, f"{spd:+.1f} km/h"]
+            sec = self.sector_name_for_m(start)  # 0.2.9: offizieller Sektor der Zone
+            sec_txt = f" ({sec})" if sec else ""
+            vals = [f"Zone {i}", f"{start}-{end} m{sec_txt}", f"{total_loss:+.3f} s", prio, cause, advice, f"{spd:+.1f} km/h"]
             for c, v in enumerate(vals):
                 self.zone_table.setItem(row, c, QTableWidgetItem(str(v)))
         self.zone_table.resizeColumnsToContents()
@@ -9269,6 +9341,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
