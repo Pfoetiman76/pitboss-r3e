@@ -30,7 +30,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.8 Beta"
+APP_VERSION = "0.2.9 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -632,6 +632,8 @@ class Sample:
     pit_window_status: int = -1       # RaceRoom: 0 aus, 1 zu, 2 offen, 3 Stopp laeuft, 4 erledigt
     pit_elapsed_s: float = -1.0
     pit_total_s: float = -1.0
+    track_length_m: float = 0.0       # 0.2.9: layout_length aus dem Spiel (0 = unbekannt)
+    sector_bounds_m: tuple = ()       # 0.2.9: offizielle innere Sektorgrenzen in m (S1-Ende, S2-Ende); leer = unbekannt
 
 
 
@@ -8132,6 +8134,24 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             self.log.append("Rundenvergleich: keine gültige Vergleichsrunde vorhanden.")
         self.update_zone_table()
 
+    def official_sector_bounds(self) -> List[float]:
+        """0.2.9: haeufigste offizielle Sektorgrenzen (Meter) aus den Samples.
+
+        Das Spiel liefert sector_start_factors (Anteil der Streckenlaenge); der Reader
+        macht daraus innere Grenzen in Metern. Kleine Rundungsunterschiede zwischen
+        Samples werden auf 10 m dedupliziert. Rueckgabe: [] = keine gueltigen Werte,
+        dann bleibt das 50-m-Raster die Grundlage."""
+        counts = {}
+        for s in self.samples:
+            b = getattr(s, "sector_bounds_m", None) or ()
+            if len(b) >= 2:
+                key = tuple(int(round(float(x) / 10.0)) for x in b[:2])
+                counts[key] = counts.get(key, 0) + 1
+        if not counts:
+            return []
+        key = max(counts.items(), key=lambda kv: kv[1])[0]
+        return [k * 10.0 for k in key]
+
     def lap_compare_report_lines(self) -> List[str]:
         if not self.segment_deltas:
             self.update_lap_compare()
@@ -8173,6 +8193,24 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             lines.append("Keine zusammenhängende Problemzone erkannt.")
         for i, (start, end, total_loss, spd, brk, thr, cause, advice) in enumerate(grouped[:8], 1):
             lines.append(f"{i}. {start}-{end} m | Summe {total_loss:+.3f} s | {cause} | Speed {spd:+.1f} km/h | Brake {brk:+.3f} | Gas {thr:+.3f}")
+
+        # 0.2.9: offizielle Spiel-Sektoren (sector_start_factors) statt nur schematischem Raster
+        bounds = self.official_sector_bounds()
+        lines.append("")
+        if len(bounds) >= 2:
+            lines.append("Offizielle Sektoren (aus dem Spiel, sector_start_factors):")
+            end_m = max((d.end_m for d in self.segment_deltas), default=0.0)
+            edges = [0.0, float(bounds[0]), float(bounds[1]), float(end_m)]
+            for si in range(3):
+                s0, s1 = edges[si], edges[si + 1]
+                segs = [d for d in self.segment_deltas if s0 - 1e-6 <= d.start_m < s1]
+                if not segs:
+                    continue
+                tot = sum(d.delta_s for d in segs)
+                spd = sum(d.speed_delta for d in segs) / len(segs)
+                lines.append(f"Sektor {si + 1} | {int(round(s0))}-{int(round(s1))} m | Delta {tot:+.3f} s | Ø Speed-Diff {spd:+.1f} km/h")
+        else:
+            lines.append("Offizielle Sektoren: Spiel liefert keine gueltigen Sektorgrenzen (sector_start_factors) - 50-m-Raster bleibt Grundlage.")
         return lines
 
 
