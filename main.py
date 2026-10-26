@@ -30,7 +30,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.3 Beta"
+APP_VERSION = "0.2.4 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -7141,6 +7141,21 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             self.status.setText(f"Sample verworfen – Recording gelockt auf {self.sample_vehicle_label(self.recording_signature)}")
             return
         self.samples.append(s)
+        # 0.2.4: Eingefrorene Telemetrie erkennen (Spiel beendet/Session verlassen):
+        # RaceRoom liefert dann unveränderte Rohwerte weiter. Nach ~5 s identischen
+        # Werten wird das Recording automatisch gestoppt, statt endlos Leerlauf zu sammeln.
+        _frozen_key = (round(s.pos_x, 3), round(s.pos_z, 3), round(s.speed_kmh, 2), round(s.steering, 4), s.lap_dist_m)
+        if _frozen_key == getattr(self, "_frozen_last_key", None):
+            self._frozen_count = getattr(self, "_frozen_count", 0) + 1
+        else:
+            self._frozen_count = 0
+            self._frozen_logged = False
+        self._frozen_last_key = _frozen_key
+        if self._frozen_count >= 45 and not getattr(self, "_frozen_logged", False):
+            self._frozen_logged = True
+            self.log.append("⚠️ Telemetrie eingefroren: identische Rohwerte über ~5 s (Spiel beendet/Session verlassen). Recording wird gestoppt.")
+            if self.recording:
+                self.stop_recording()
         if not silent:
             self.add_sample_to_table(s)
             self.trackmap.set_samples(self.samples)
@@ -7218,6 +7233,26 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             ("HR", s.tire_rr_pressure_kpa, s.tire_rr_temp_l_c, s.tire_rr_temp_c_c, s.tire_rr_temp_r_c, s.tire_rr_carcass_c, s.tire_rr_wear_pct, s.tire_rr_flat, s.tire_rr_grip_fract),
         ]
 
+    def telemetry_channels_active(self) -> dict:
+        """0.2.4: Erkennt Telemetrie-Kanäle, die das Spiel nicht liefert (im Spiel deaktiviert).
+
+        RaceRoom füllt deaktivierte Kanäle mit konstanten Ruhe-Werten:
+        Wear/Rest 100 %, Carcass 0,0 °C, Verbrauch 0,000 l.
+        Ein Kanal gilt als aktiv, wenn er im Stint mindestens einmal vom
+        Ruhe-Wert abgewichen ist. Ohne Samples neutral (True) zurückgeben,
+        damit keine Entscheidung erzwungen wird.
+        """
+        if not self.samples:
+            return {"wear": True, "carcass": True, "fuel": True}
+        prefixes = ("tire_fl", "tire_fr", "tire_rl", "tire_rr")
+        wear_vals = [float(getattr(s, f"{p}_wear_pct", 100.0) or 0.0) for s in self.samples for p in prefixes]
+        wear_active = any(math.isfinite(v) and v < 99.5 for v in wear_vals)
+        carc_vals = [float(getattr(s, f"{p}_carcass_c", 0.0) or 0.0) for s in self.samples for p in prefixes]
+        carcass_active = any(math.isfinite(v) and v > 0.5 for v in carc_vals)
+        fuel_vals = [float(getattr(s, "fuel_l", 0.0) or 0.0) for s in self.samples]
+        fuel_active = bool(fuel_vals) and (max(fuel_vals) - min(fuel_vals)) > 0.05
+        return {"wear": wear_active, "carcass": carcass_active, "fuel": fuel_active}
+
     def flatspot_status(self, flat: bool, grip_fract: float, brake: float = 0.0, speed_kmh: float = 0.0, sample: Optional[Sample] = None) -> str:
         # Echte RaceRoom-tire_flatspot-Meldung hat Vorrang, aber nur bei plausibler Fahrt.
         if flat and speed_kmh > 10:
@@ -7227,10 +7262,12 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             return "OK"
         is_abs_car = bool(getattr(sample, "abs_on", False)) if sample else False
         # ABS an: Sliding unter Bremse = ABS-Stress. ABS aus/nicht vorhanden: Sliding unter Bremse = Lockup-Risiko.
+        # 0.2.4: Schwellen gelockert (ABS! ab 0.60 statt 0.45, ABS ab 0.35 statt 0.22) -
+        # Nürburgring-Daten: schnellste Runde war die aggressivste, alte Schwellen warfen zu schnell "ABS!".
         if is_abs_car:
-            if gf >= 0.45:
+            if gf >= 0.60:
                 return "ABS!"
-            if gf >= 0.22:
+            if gf >= 0.35:
                 return "ABS"
             return "OK"
         if gf >= 0.35:
@@ -7248,6 +7285,8 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         if self.tire_table.rowCount() != len(rows):
             self.tire_table.setRowCount(len(rows))
         notes = []
+        # 0.2.4: Im Spiel deaktivierte Kanäle als solche anzeigen statt Ruhe-Werte als Messwerte.
+        ch = self.telemetry_channels_active()
         for r, (name, pressure, tl, tc, tr, carcass, wear, flat, grip_fract) in enumerate(rows):
             avg_temp = (tl + tc + tr) / 3.0 if (tl or tc or tr) else 0.0
             spread = tr - tl
@@ -7262,10 +7301,10 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 f"{tl:.1f} °C",
                 f"{tc:.1f} °C",
                 f"{tr:.1f} °C",
-                f"{carcass:.1f} °C",
-                f"{wear:.1f}",
+                f"{carcass:.1f} °C" if ch["carcass"] else "— (Spiel aus)",
+                f"{wear:.1f}" if ch["wear"] else "— (Spiel aus)",
                 flat_status,
-                hint,
+                hint if ch["wear"] else (hint + " | Wear: im Spiel deaktiviert" if hint else "Wear: im Spiel deaktiviert"),
             ]
             for c, v in enumerate(vals):
                 it = self.tire_table.item(r, c)
@@ -7383,7 +7422,13 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             if not is_complete:
                 reasons.append("nicht komplett/Outlap")
             if invalidated:
-                reasons.append("invalidiert")
+                # 0.2.4: Grund ausweisen. RaceRoom liefert die Ursache nicht per Shared Memory,
+                # aber die Position des Flags schon - meist Streckenbegrenzung/Cut/Sprung.
+                first_inv = next((r for r in rows if r.lap_invalidated), None)
+                if first_inv is not None and getattr(first_inv, "lap_dist_m", -1) >= 0:
+                    reasons.append(f"invalidiert ab {first_inv.lap_dist_m:.0f} m (Grund nicht im Shared Memory, meist Cut/Streckenbegrenzung)")
+                else:
+                    reasons.append("invalidiert (Grund nicht im Shared Memory, meist Cut/Streckenbegrenzung)")
             if in_pits:
                 reasons.append("Pit")
             if has_standstill and not is_complete:
@@ -7468,7 +7513,12 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 best_high[idx] = max(vals); worst_high[idx] = min(vals)
         for lap, s1, s2, s3, dur, mn, mx, avg in rows:
             row = self.lap_overview_table.rowCount(); self.lap_overview_table.insertRow(row)
-            vals = [f"Lap #{lap.lap_number}", fmt_lap_time(s1), fmt_lap_time(s2), fmt_lap_time(s3), fmt_lap_time(dur), f"{mn:.2f}", f"{mx:.2f}", f"{avg:.2f}"]
+            # 0.2.4: Unvollständige Runden zeigen keine übernommene Zeit mehr
+            # (Runde 11 stand mit der Zeit von Runde 10 in der Tabelle).
+            if not lap.is_complete:
+                vals = [f"Lap #{lap.lap_number}", "—", "—", "—", "—", f"{mn:.2f}", f"{mx:.2f}", f"{avg:.2f}"]
+            else:
+                vals = [f"Lap #{lap.lap_number}", fmt_lap_time(s1), fmt_lap_time(s2), fmt_lap_time(s3), fmt_lap_time(dur), f"{mn:.2f}", f"{mx:.2f}", f"{avg:.2f}"]
             raw = [None, s1, s2, s3, dur, mn, mx, avg]
             for c, v in enumerate(vals):
                 item = QTableWidgetItem(str(v))
@@ -7496,16 +7546,23 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         clean = [l for l in self.lap_summaries if l.is_clean]
         # 3.7: Auto reference can be overridden manually.
         manual_ref = self.lap_by_number(self.manual_reference_lap)
+        # 0.2.4: Manuelle Referenz muss sauber sein - keine ungültige Runde als Referenz.
+        if manual_ref is not None and not manual_ref.is_clean:
+            self.log.append(f"Manuell gewählte Referenz Lap {manual_ref.lap_number} ist nicht sauber ({manual_ref.reason}) - Referenz ignoriert, Auto-Referenz wird genutzt.")
+            manual_ref = None
         self.reference_lap = manual_ref or (min(clean, key=lambda l: self.estimated_lap_time_from_speed(l.lap_number)) if clean else None)
         self.update_lap_overview_table()
         self.laps_table.setRowCount(0)
         for lap in self.lap_summaries:
             row = self.laps_table.rowCount(); self.laps_table.insertRow(row)
             status = "REFERENZ" if self.reference_lap and lap.lap_number == self.reference_lap.lap_number else ("gültig" if lap.is_clean else "ausgeschlossen")
+            ch = self.telemetry_channels_active()
             vals = [
-                lap.lap_number, status, lap.reason, lap.samples, f"{lap.coverage_m:.1f}", fmt_lap_time(self.lap_time_for_report(lap)),
+                lap.lap_number, status, lap.reason, lap.samples, f"{lap.coverage_m:.1f}",
+                fmt_lap_time(self.lap_time_for_report(lap)) if lap.is_complete else "— (unvollständig)",
                 f"{lap.max_speed:.1f}", f"{lap.avg_speed:.1f}", f"{lap.max_brake:.3f}",
-                f"{lap.fuel_used_l:.3f}", f"{lap.start_m:.1f}", f"{lap.end_m:.1f}",
+                f"{lap.fuel_used_l:.3f}" if ch["fuel"] else "— (Spiel aus)",
+                f"{lap.start_m:.1f}", f"{lap.end_m:.1f}",
                 f"stand={int(lap.has_standstill)} pit={int(lap.in_pits)}"
             ]
             for c, v in enumerate(vals):
@@ -7585,7 +7642,27 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             if avg_speed <= 1:
                 continue
             segment_len_m = max(1.0, min(50.0, max_d - start_m))
-            seg_time_s = segment_len_m / (avg_speed / 3.6)
+            # 0.2.4: Segmentzeit korrekt über Sample-Paare integrieren (harmonisches Mittel)
+            # statt Länge / Ø-Speed (arithmetisch). Letzteres überschätzt die Zeit
+            # systematisch und machte die Zonensummen nicht nachrechenbar.
+            seg_time_s = 0.0
+            end_m_eff = min(start_m + 50.0, max_d)
+            first_r, last_r = seg_rows[0], seg_rows[-1]
+            if first_r.lap_dist_m > start_m:
+                seg_time_s += (first_r.lap_dist_m - start_m) / max(first_r.speed_kmh, 2.0)
+            _prev = None
+            for _r in seg_rows:
+                if _prev is not None and _r.lap_dist_m > _prev.lap_dist_m:
+                    _v = max((_prev.speed_kmh + _r.speed_kmh) / 2.0, 2.0)
+                    seg_time_s += (_r.lap_dist_m - _prev.lap_dist_m) / _v
+                _prev = _r
+            if last_r.lap_dist_m < end_m_eff and (end_m_eff - last_r.lap_dist_m) < 25.0:
+                seg_time_s += (end_m_eff - last_r.lap_dist_m) / max(last_r.speed_kmh, 2.0)
+            # Einheiten: Geschwindigkeit liegt in km/h; Faktor 3.6 rechnet auf m/s um
+            # (dist/speed_kmh * 3.6 == dist/(speed_kmh/3.6)).
+            seg_time_s *= 3.6
+            if seg_time_s <= 0:
+                seg_time_s = segment_len_m / (avg_speed / 3.6)
             brakes = [r.brake for r in seg_rows]
             thrs = [r.throttle for r in seg_rows]
             gears = [r.gear for r in seg_rows if r.gear > 0]
@@ -8286,11 +8363,13 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
 
         lines.append("")
         lines.append("Pro Reifen:")
+        _ch = self.telemetry_channels_active()
         for name in ["VL", "VR", "HL", "HR"]:
             v = stats.get(name, {})
             if not v:
                 continue
-            lines.append(f"{name}: {v['pressure']/100.0:.2f} bar | A/M/I {v['out']:.0f}/{v['mid']:.0f}/{v['in']:.0f} °C | Rest {v['wear']:.0f}% | {v['hint']}")
+            wear_txt = f"Rest {v['wear']:.0f}%" if _ch["wear"] else "Wear im Spiel deaktiviert"
+            lines.append(f"{name}: {v['pressure']/100.0:.2f} bar | A/M/I {v['out']:.0f}/{v['mid']:.0f}/{v['in']:.0f} °C | {wear_txt} | {v['hint']}")
             sp = v.get("spread", 0.0)
             mid = v.get("mid", 0.0)
             hot_side = "innen" if sp > 8 else ("außen" if sp < -8 else "gleichmäßig")
@@ -8338,10 +8417,11 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         max_v = max(vals)
         cnt_warn = sum(1 for v in vals if v >= 0.25)
         is_abs_car = any(bool(getattr(s, "abs_on", False)) for s in driving[:200])
+        # 0.2.4: ABS-Schwellen gelockert (0.60/0.35 statt 0.45/0.25, Warnzähler 12/5 statt 8/3).
         if is_abs_car:
-            if max_v >= 0.45 or cnt_warn >= 8:
+            if max_v >= 0.60 or cnt_warn >= 12:
                 return f"ABS! max {max_v:.2f}"
-            if max_v >= 0.25 or cnt_warn >= 3:
+            if max_v >= 0.35 or cnt_warn >= 5:
                 return f"ABS max {max_v:.2f}"
             return "OK"
         if max_v >= 0.45 or cnt_warn >= 8:
@@ -8496,6 +8576,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         def finite(vals):
             return [float(v) for v in vals if math.isfinite(float(v))]
         lines.append("Reifen | Druck kPa avg/min/max | Druck bar avg | Temp außen/mitte/innen avg °C | Carcass avg °C | Wear/Rest avg % | Spread innen-außen | Flat/ABS | Hinweis")
+        _ch = self.telemetry_channels_active()
         for name, prefix in specs:
             pressures = [x for x in finite([getattr(s, f"{prefix}_pressure_kpa", 0.0) for s in self.samples]) if 60.0 <= x <= 350.0]
             out_t = [x for x in finite([getattr(s, f"{prefix}_temp_l_c", 0.0) for s in self.samples]) if -20.0 <= x <= 180.0]
@@ -8510,7 +8591,9 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             spread = in_avg - out_avg
             hint = self.tire_setup_hint(out_avg, mid_avg, in_avg, p_avg, wear_avg)
             flat_line = self.flatspot_report_for_prefix(prefix)
-            lines.append(f"{name} | {p_avg:.1f}/{p_min:.1f}/{p_max:.1f} | {p_avg/100.0:.2f} | {out_avg:.1f}/{mid_avg:.1f}/{in_avg:.1f} | {carc_avg:.1f} | {wear_avg:.1f} | {spread:+.1f} | {flat_line} | {hint}")
+            carc_txt = f"{carc_avg:.1f}" if _ch["carcass"] else "— (Spiel aus)"
+            wear_txt = f"{wear_avg:.1f}" if _ch["wear"] else "— (Spiel aus)"
+            lines.append(f"{name} | {p_avg:.1f}/{p_min:.1f}/{p_max:.1f} | {p_avg/100.0:.2f} | {out_avg:.1f}/{mid_avg:.1f}/{in_avg:.1f} | {carc_txt} | {wear_txt} | {spread:+.1f} | {flat_line} | {hint}")
         lines.append("")
         lines.append("Stint-Trend Reifen:")
         n = len(self.samples)
@@ -8532,11 +8615,15 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 t0 = (a(first, f"{prefix}_temp_l_c") + a(first, f"{prefix}_temp_c_c") + a(first, f"{prefix}_temp_r_c")) / 3.0
                 t1 = (a(last, f"{prefix}_temp_l_c") + a(last, f"{prefix}_temp_c_c") + a(last, f"{prefix}_temp_r_c")) / 3.0
                 w0, w1 = a(first, f"{prefix}_wear_pct"), a(last, f"{prefix}_wear_pct")
-                lines.append(f"{name}: Druck {p0:.1f}→{p1:.1f} kPa ({p0/100.0:.2f}→{p1/100.0:.2f} bar), Temp {t0:.1f}→{t1:.1f} °C, Wear/Rest {w0:.1f}→{w1:.1f} %")
+                wear_trend = f"Wear/Rest {w0:.1f}→{w1:.1f} %" if _ch["wear"] else "Wear im Spiel deaktiviert"
+                lines.append(f"{name}: Druck {p0:.1f}→{p1:.1f} kPa ({p0/100.0:.2f}→{p1/100.0:.2f} bar), Temp {t0:.1f}→{t1:.1f} °C, {wear_trend}")
         else:
             lines.append("Zu wenig Samples für Trend. Für Stint-Trend bitte mindestens 3–5 volle Runden aufzeichnen.")
         lines.append("Hinweis: Flat/ABS nutzt den echten Flatspot-Status des Spiels. Mit aktivem ABS = ABS-Stress, ohne ABS = LOCK/LOCK!-Risiko.")
         lines.append("Wear/Rest wird aktuell als Restzustand interpretiert: höher = besser/frischer.")
+        _disabled = [k for k, on in _ch.items() if not on]
+        if _disabled:
+            lines.append("⚠️ Im Spiel deaktivierte Kanäle erkannt: " + ", ".join(_disabled) + ". Deren Werte sind Ruhe-Defaults, keine Messwerte; zugehörige Hinweise entfallen.")
         return lines
 
     def lap_report_lines(self) -> List[str]:
@@ -8594,8 +8681,9 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             # abrupte Bremslösung während relevanter Bremsphase
             if prev.brake > 0.30 and cur.brake > 0.05 and db < -0.16 and cur.speed_kmh > 40:
                 brake_release_spikes += 1
-            # zu abrupte Gasannahme aus niedriger Teillast heraus
-            if prev.throttle < 0.55 and dt > 0.22 and cur.speed_kmh > 35:
+            # 0.2.4: zu abrupte Gasannahme - Schwelle gelockert (0.40/0.30 statt 0.55/0.22):
+            # die Nürburgring-Bestlap hatte viele kurze Gasstöße, ohne ruppig zu sein.
+            if prev.throttle < 0.40 and dt > 0.30 and cur.speed_kmh > 35:
                 throttle_spikes += 1
             prev = cur
         coast = sum(1 for s in driven if s.brake < 0.04 and s.throttle < 0.04)
@@ -8611,9 +8699,9 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             hints.append("Bremse löst ruppig")
         elif brake_release_spikes <= 1 and max_brake > 0.5:
             hints.append("Bremslösung sauber")
-        if throttle_spikes >= 6:
+        if throttle_spikes >= 8:
             hints.append("Gasannahme ruppig")
-        elif throttle_spikes <= 2:
+        elif throttle_spikes <= 3:
             hints.append("Gasannahme sauber")
         if overlap_pct > 4:
             hints.append("Gas/Bremse Überlappung")
@@ -8688,7 +8776,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                     item.setBackground(QColor(160, 100, 70, 150))
                 elif c == 4 and r['brake_release_spikes'] >= 5:
                     item.setBackground(QColor(160, 100, 70, 150))
-                elif c == 5 and r['throttle_spikes'] >= 6:
+                elif c == 5 and r['throttle_spikes'] >= 8:
                     item.setBackground(QColor(160, 100, 70, 150))
                 elif c == 7 and r['overlap_pct'] > 4:
                     item.setBackground(QColor(160, 100, 70, 150))
@@ -8860,3 +8948,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
