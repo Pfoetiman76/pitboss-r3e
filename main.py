@@ -30,7 +30,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.7 Beta"
+APP_VERSION = "0.2.8 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -4514,10 +4514,8 @@ class Main(QMainWindow):
         dash_layout.setContentsMargins(0, 8, 0, 0); dash_layout.setSpacing(12)
         sess = QGroupBox("SITZUNG"); sg = QGridLayout(sess); sg.setHorizontalSpacing(10)
         sg.addWidget(QLabel("Setup"), 0, 0); sg.addWidget(self.setup_selector, 0, 1)
-        sg.addWidget(QLabel("Fahrerprofil"), 0, 2); sg.addWidget(self.driver_profile_selector, 0, 3)
-        sg.addWidget(self.btn_profile_menu, 0, 4)
-        sg.addWidget(self.btn_fahrer_hardware, 0, 5)
-        sg.setColumnStretch(1, 1); sg.setColumnStretch(3, 1)
+        # 0.2.8: Fahrerprofil-Auswahl und "Fahrer & Hardware"-Button aus der Sitzungsleiste entfernt.
+        sg.setColumnStretch(1, 1)
         dash_layout.addWidget(sess)
         self.dash_cards = {}
         card_grid = QGridLayout(); card_grid.setSpacing(10)
@@ -4750,7 +4748,9 @@ class Main(QMainWindow):
         self.hardware_coach_text = QTextEdit(); self.hardware_coach_text.setReadOnly(True); self.hardware_coach_text.setMaximumHeight(150)
         self.hardware_coach_text.setVisible(False)  # 0.4.8.1: aus der Ansicht genommen
 
-        self.tabs.addTab(hw_tab, "Fahrer & Hardware")
+        # 0.2.8: Ansicht "Fahrer & Hardware" entfernt - hw_tab wird nicht mehr als Reiter
+        # angehaengt (auch kein Navi-Button mehr). Die Widgets bleiben erzeugt, damit die
+        # Profil-Logik und alle Signal-Verbindungen stabil laufen.
 
         # 0.2.0: Navigation ueber die Seitenleiste; die Tab-Leiste des Hauptbereichs bleibt versteckt.
         self.tabs.tabBar().hide()
@@ -4760,7 +4760,7 @@ class Main(QMainWindow):
         _tab_index = {self.tabs.tabText(i): i for i in range(self.tabs.count())}
         for _label, _key in (("DASHBOARD", "Dashboard"), ("LIVE", "Live"), ("REIFEN", "Reifen"),
                              ("ANALYSE", "Analyse"), ("RUNDEN", "Runden"), ("VERGLEICH", "Vergleich"),
-                             ("HEATMAP", "Heatmap"), ("COACH", "Coach"), ("FAHRER && HARDWARE", "Fahrer & Hardware")):
+                             ("HEATMAP", "Heatmap"), ("COACH", "Coach")):
             if _key not in _tab_index:
                 continue
             _b = QPushButton(_label); _b.setObjectName("navBtn"); _b.setCheckable(True)
@@ -9081,7 +9081,6 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             "SimHub wird nicht benötigt. Trackmap basiert auf pos_x/pos_z, Segmentierung auf lap_dist_m.",
             "Clean-Lap-Filter: Standphase/Pit/Outlap werden entfernt. Reifen-/Brems-/Schaden-Overlays, Referenzrunden, Input-Coach, Limit-Coach und Fahrer-/Hardwareprofile nutzen die RaceRoom-Telemetrie.",
             f"Gewähltes Setup: {self.selected_setup_label()}",
-            f"Fahrer-/Hardware-Profil: {self.hardware_profile_summary()}",
             f"Externe Referenz: {self.external_reference_label() if self.external_reference else 'nicht geladen'}",
             f"Auto-Bestlap-Export: {'AN' if self.auto_bestlap_export_enabled else 'AUS'} | Live-Puffer: {'AN' if self.auto_bestlap_live_mode else 'AUS'}" + (f" | Lap {self.auto_bestlap_lap_number} | {fmt_lap_time(self.auto_bestlap_time_s)} | {self.auto_bestlap_export_path}" if self.auto_bestlap_export_path else ""),
             "Hotkeys: " + hotkey_summary(self.hotkey_config) + " | Windows: nur Polling, keine parallelen App-Shortcuts",
@@ -9093,10 +9092,8 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             f"Verworfene Samples wegen Fahrzeug-/Klassenwechsel/ungültig: {self.rejected_sample_count}",
             "",
         ]
-        # 4.4.25: Der vollständige Hardware-/Screenshot-Block gehört immer in den Report,
-        # auch bei Snapshot/Kurzaufnahme ohne Samples. Das macht die Reports für spätere
-        # KI-Auswertung und Team-Vergleiche vollständig.
-        lines += self.hardware_report_lines()
+        # 0.2.8: Hardware-/Profil-Block aus dem Report entfernt - die Ansicht
+        # "Fahrer & Hardware" ist aus der App gestrichen.
         if self.samples:
             last = self.samples[-1]
             lines += [
@@ -9234,6 +9231,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
