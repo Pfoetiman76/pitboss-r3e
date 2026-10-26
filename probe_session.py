@@ -18,6 +18,8 @@ from pathlib import Path
 
 import raceroom_sm
 
+NL = "\n"
+
 
 def main() -> int:
     interval = 30.0
@@ -29,44 +31,43 @@ def main() -> int:
         except ValueError:
             pass
 
-    out_path = Path(__file__).resolve().parent / f"probe_session_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    out_path = Path(__file__).resolve().parent / ("probe_session_" + datetime.now().strftime("%Y%m%d_%H%M%S") + ".txt")
     rd = raceroom_sm.R3EReader(raceroom_sm._FakeSample)
     n = 0
 
     print("PitBoss R3E Probe-Sammler")
-    print(f"Intervall: {interval:.0f} s | Ausgabe: {out_path}")
+    print("Intervall: " + f"{interval:.0f}" + " s | Ausgabe: " + str(out_path))
     print("Warte auf RaceRoom und eine laufende Session ... (Strg+C beendet)")
 
     with open(out_path, "w", encoding="utf-8") as fh:
-        fh.write(f"PitBoss R3E Probe-Sammler | Intervall {interval:.0f} s | Start {datetime.now().isoformat(timespec='seconds')}
-")
+        fh.write("PitBoss R3E Probe-Sammler | Intervall " + f"{interval:.0f}" + " s | Start " + datetime.now().isoformat(timespec="seconds") + NL)
         try:
             while True:
                 stamp = datetime.now().isoformat(timespec="seconds")
                 try:
                     d = rd.read_object()
                     if int(d.version_major) != raceroom_sm.R3E_VERSION_MAJOR:
-                        fh.write(f"\n===== {stamp} =====\n[wartet] $R3E inaktiv (version_major={int(d.version_major)})\n")
-                        print(f"\r[{stamp}] wartet: Spiel/Session nicht aktiv", end="", flush=True)
+                        fh.write(NL + "===== " + stamp + " =====" + NL + "[wartet] $R3E inaktiv (version_major=" + str(int(d.version_major)) + ")" + NL)
+                        print("\r[" + stamp + "] wartet: Spiel/Session nicht aktiv", end="", flush=True)
                     else:
                         try:
                             rd.read_sample()  # Heuristiken (Verschleiss/Sektoren/Schaden) aktualisieren
                         except Exception:
                             pass
                         block = raceroom_sm._probe_text(rd, d)
-                        fh.write(f"\n===== {stamp} (Probe #{n + 1}) =====\n{block}\n")
+                        fh.write(NL + "===== " + stamp + " (Probe #" + str(n + 1) + ") =====" + NL + block + NL)
                         fh.flush()
                         n += 1
-                        print(f"\r[{stamp}] Probe #{n} aufgezeichnet", end="", flush=True)
+                        print("\r[" + stamp + "] Probe #" + str(n) + " aufgezeichnet", end="", flush=True)
                 except Exception as e:
-                    fh.write(f"\n===== {stamp} =====\n[wartet] {e}\n")
-                    print(f"\r[{stamp}] wartet: {str(e)[:70]}", end="", flush=True)
+                    fh.write(NL + "===== " + stamp + " =====" + NL + "[wartet] " + str(e) + NL)
+                    print("\r[" + stamp + "] wartet: " + str(e)[:70], end="", flush=True)
                 time.sleep(interval)
         except KeyboardInterrupt:
             pass
         finally:
-            fh.write(f"\nEnde {datetime.now().isoformat(timespec='seconds')} | Probes: {n}\n")
-    print(f"\n\nFertig. {n} Snapshots gespeichert in:\n{out_path}")
+            fh.write(NL + "Ende " + datetime.now().isoformat(timespec="seconds") + " | Probes: " + str(n) + NL)
+    print(NL + NL + "Fertig. " + str(n) + " Snapshots gespeichert in:" + NL + str(out_path))
     print("Diese Datei fuer die Kalibrierung an Vibe/PitBoss hochladen.")
     return 0
 
