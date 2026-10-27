@@ -31,7 +31,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.26 Beta"
+APP_VERSION = "0.2.27 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -837,6 +837,7 @@ class TelemetryMapWidget(QWidget):
         super().__init__()
         self.rows = []
         self.outline = []  # 0.2.26: Strecken-Umriss aus allen Runden, damit die Karte lesbar bleibt
+        self.cursor_dist = None  # 0.2.27: None = automatisch letzte Position, sonst Rundenmeter
         self.setMinimumHeight(220)
 
     def set_rows(self, rows):
@@ -846,6 +847,11 @@ class TelemetryMapWidget(QWidget):
     def set_outline(self, rows):
         self.outline = list(rows or [])
         self.update()
+
+    def set_cursor_dist(self, d):
+        if d != self.cursor_dist:
+            self.cursor_dist = d
+            self.update()
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -897,8 +903,17 @@ class TelemetryMapWidget(QWidget):
         x0, y0 = pt(rows[0])  # Start/Ziel-Marker
         p.setPen(QPen(QColor(235, 185, 60), 2))
         p.drawEllipse(QPointF(x0, y0), 4, 4)
-        # 0.2.26: aktuelle Position als gelber Punkt (deckender Ring)
-        cur = pt(rows[-1])
+        # 0.2.26/0.2.27: Position als gelber Punkt - automatisch am Ende oder am Cursor (Maus)
+        pos_s = rows[-1]
+        if self.cursor_dist is not None:
+            best = None
+            for s in rows:
+                d = abs(float(getattr(s, "lap_dist_m", 0.0) or 0.0) - float(self.cursor_dist))
+                if best is None or d < best[0]:
+                    best = (d, s)
+            if best is not None:
+                pos_s = best[1]
+        cur = pt(pos_s)
         p.setPen(QPen(QColor(235, 185, 60), 2))
         p.drawEllipse(QPointF(cur[0], cur[1]), 7, 7)
         p.setPen(QPen(QColor(16, 16, 16), 2))
@@ -914,11 +929,40 @@ class TelemetryTraceWidget(QWidget):
     def __init__(self):
         super().__init__()
         self.rows = []
+        self.cursor_dist = None  # 0.2.27: Rundenmeter des Cursors; None = automatisch am Ende folgen
+        self.on_cursor = None    # 0.2.27: Callback(dist) wenn der Nutzer den Cursor zieht
         self.setMinimumHeight(260)
+        self.setMouseTracking(True)
 
     def set_rows(self, rows):
         self.rows = list(rows or [])
         self.update()
+
+    def set_cursor_dist(self, d):
+        if d != self.cursor_dist:
+            self.cursor_dist = d
+            self.update()
+
+    def mousePressEvent(self, e):
+        self._cursor_from_pos(e)
+
+    def mouseMoveEvent(self, e):
+        if e.buttons() & Qt.LeftButton:
+            self._cursor_from_pos(e)
+
+    def _cursor_from_pos(self, e):
+        """0.2.27: Cursor per Maus ziehen - gelber Streifen ist interaktiv."""
+        if len(self.rows) < 2 or not self.on_cursor:
+            return
+        left = 86
+        plot_w = max(self.width() - left - 8, 1.0)
+        frac = max(0.0, min(1.0, (float(e.position().x()) - left) / plot_w))
+        dmax = 1.0
+        for s in self.rows:
+            d = float(getattr(s, "lap_dist_m", 0.0) or 0.0)
+            if d > dmax:
+                dmax = d
+        self.on_cursor(frac * dmax)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -988,8 +1032,12 @@ class TelemetryTraceWidget(QWidget):
             if prev is not None and abs(x - prev[0]) <= 160:
                 p.drawLine(QPointF(prev[0], prev[1]), QPointF(x, y))
             prev = (x, y)
-        # 0.2.26: gelber Positions-Streifen - wo man gerade auf der Runde ist
-        cur = px(rows[-1])
+        # 0.2.26/0.2.27: gelber Positions-Streifen - automatisch am Ende, oder per Maus gezogen
+        if self.cursor_dist is not None:
+            cd = max(0.0, min(float(self.cursor_dist), dmax))
+        else:
+            cd = float(getattr(rows[-1], "lap_dist_m", 0.0) or 0.0)
+        cur = left + (cd / dmax) * plot_w
         p.setPen(QPen(QColor(235, 185, 60), 2))
         p.drawLine(QPointF(cur, 20), QPointF(cur, h - 2))
 
@@ -5061,8 +5109,11 @@ class Main(QMainWindow):
         _tele_btns.addWidget(self.telemetry_lap_combo)
         _b_tele_ref = QPushButton("Aktualisieren"); _b_tele_ref.clicked.connect(self.update_telemetry_view)
         _tele_btns.addWidget(_b_tele_ref)
+        _b_tele_follow = QPushButton("Live folgen"); _b_tele_follow.clicked.connect(lambda: self._set_telemetry_cursor(None))  # 0.2.27
+        _tele_btns.addWidget(_b_tele_follow)
         telemetry_layout.addLayout(_tele_btns)
         self.telemetry_trace = TelemetryTraceWidget()
+        self.telemetry_trace.on_cursor = self._set_telemetry_cursor  # 0.2.27: Cursor ziehen
         telemetry_layout.addWidget(self.telemetry_trace, 3)
         self.telemetry_map = TelemetryMapWidget()  # 0.2.25: Input-Karte
         telemetry_layout.addWidget(self.telemetry_map, 2)
@@ -7910,6 +7961,15 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         self.status.setText("🔴 RECORDING AKTIV – " + self.hotkey_config.get("record", "F8") + " stoppt und speichert Report/CSV automatisch.")
         self.refresh_dashboard()
 
+    def _set_telemetry_cursor(self, dist):
+        """0.2.27: Positions-Cursor (Rundenmeter) fuer Spuren + Input-Karte setzen.
+        None = automatisch dem letzten Sample folgen."""
+        self._telemetry_cursor_dist = dist
+        if hasattr(self, "telemetry_trace"):
+            self.telemetry_trace.set_cursor_dist(dist)
+        if hasattr(self, "telemetry_map"):
+            self.telemetry_map.set_cursor_dist(dist)
+
     def update_telemetry_view(self):
         """0.2.25: Telemetrie-Reiter - gewaehlte Runde, Kanal-Spuren + Input-Karte."""
         if not hasattr(self, "telemetry_trace"):
@@ -7940,6 +8000,11 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         if hasattr(self, "telemetry_map"):
             self.telemetry_map.set_outline(driven)  # 0.2.26: Strecken-Umriss aus allen Runden
             self.telemetry_map.set_rows(rows)
+        # 0.2.27: manuellen Cursor beibehalten (None = automatisch folgen)
+        cur = getattr(self, "_telemetry_cursor_dist", None)
+        self.telemetry_trace.set_cursor_dist(cur)
+        if hasattr(self, "telemetry_map"):
+            self.telemetry_map.set_cursor_dist(cur)
         if rows:
             tmax = 0.0
             bmax = 0.0
