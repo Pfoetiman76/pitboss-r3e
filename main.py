@@ -31,7 +31,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.20 Beta"
+APP_VERSION = "0.2.21 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -826,6 +826,114 @@ class SegmentDelta:
     ref_avg_throttle: float
     throttle_delta: float
     hint: str
+
+
+class TelemetryGGWidget(QWidget):
+    """0.2.21: G-G-Diagramm - Quer- vs. Laengs-G-Kraft, Farbe = Geschwindigkeit."""
+
+    def __init__(self):
+        super().__init__()
+        self.points = []  # (g_lat, g_long, speed_kmh)
+        self.setMinimumHeight(300)
+
+    def set_points(self, pts):
+        self.points = list(pts or [])
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        p.fillRect(self.rect(), QColor(20, 20, 24))
+        w, h = self.width(), self.height()
+        cx, cy = w / 2.0, h / 2.0
+        r = max(min(w, h) / 2.0 - 16.0, 40.0)
+        scale = 2.75  # Rand des Diagramms in g
+        # Raster: 1g/2g-Kreise + Achsen
+        p.setPen(QPen(QColor(80, 80, 90), 1))
+        for g in (1.0, 2.0):
+            p.drawEllipse(QPointF(cx, cy), r * g / scale, r * g / scale)
+        p.setPen(QPen(QColor(95, 95, 105), 1))
+        p.drawLine(int(cx - r - 6), int(cy), int(cx + r + 6), int(cy))
+        p.drawLine(int(cx), int(cy - r - 6), int(cx), int(cy + r + 6))
+        p.setPen(QColor(150, 150, 160))
+        p.drawText(QRectF(8, 6, 260, 18), Qt.AlignLeft, "G-G-Diagramm (quer = rechts/links, oben = Beschleunigung, unten = Bremsen)")
+        for g in (1.0, 2.0):
+            p.drawText(QRectF(cx + r * g / scale + 2, cy - 8, 40, 16), Qt.AlignLeft, str(int(g)) + "g")
+        # Punkte: Farbe = Speed (blau langsam, gruen mittel, rot schnell)
+        vmax = 300.0
+        for pt in self.points:
+            if pt[2] > vmax:
+                vmax = pt[2]
+        for gl, gt, spd in self.points:
+            frac = max(0.0, min(1.0, spd / max(vmax, 60.0)))
+            if frac < 0.33:
+                col = QColor(70, 150, 235)
+            elif frac < 0.66:
+                col = QColor(90, 215, 120)
+            else:
+                col = QColor(235, 70, 60)
+            p.setPen(QPen(col, 1))
+            p.drawPoint(int(cx + (gl / scale) * r), int(cy - (gt / scale) * r))
+        if not self.points:
+            p.setPen(QColor(210, 210, 210))
+            p.drawText(self.rect(), Qt.AlignCenter, "Noch keine G-Kraft-Daten (Aufzeichnung starten)")
+
+
+class TelemetryTraceWidget(QWidget):
+    """0.2.21: Spuren ueber Rundenmeter: G-quer, G-laengs, Lenkung, Gas/Bremse."""
+
+    def __init__(self):
+        super().__init__()
+        self.rows = []
+        self.setMinimumHeight(240)
+
+    def set_rows(self, rows):
+        self.rows = list(rows or [])
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        p.fillRect(self.rect(), QColor(20, 20, 24))
+        rows = self.rows
+        if len(rows) < 2:
+            p.setPen(QColor(210, 210, 210))
+            p.drawText(self.rect(), Qt.AlignCenter, "Telemetrie-Spuren erscheinen mit aufgezeichneter Fahrt")
+            return
+        w, h = self.width(), self.height()
+        left = 78
+        dmax = 1.0
+        for s in rows:
+            d = float(getattr(s, "lap_dist_m", 0.0) or 0.0)
+            if d > dmax:
+                dmax = d
+        if dmax <= 0:
+            dmax = 1.0
+        lanes = [
+            ("G-quer", QColor(235, 70, 55), lambda s: max(-1.0, min(1.0, float(getattr(s, "g_force_lat", 0.0) or 0.0) / 2.5))),
+            ("G-laengs", QColor(70, 190, 235), lambda s: max(-1.0, min(1.0, float(getattr(s, "g_force_long", 0.0) or 0.0) / 2.5))),
+            ("Lenkung", QColor(235, 185, 60), lambda s: max(-1.0, min(1.0, float(s.steering)))),
+            ("Gas/Bremse", QColor(90, 215, 120), lambda s: (float(s.throttle) if float(s.throttle) > 0.04 else -float(s.brake))),
+        ]
+        lane_h = h / float(len(lanes))
+        for i, (label, col, fn) in enumerate(lanes):
+            top = i * lane_h
+            mid = top + lane_h / 2.0
+            p.setPen(QPen(QColor(70, 70, 80), 1))
+            p.drawLine(0, int(mid), w, int(mid))
+            p.setPen(QColor(150, 150, 160))
+            p.drawText(QRectF(6, top + 2, left - 8, 16), Qt.AlignLeft, label)
+            p.setPen(QPen(col, 2))
+            prev = None
+            for s in rows:
+                x = left + (float(getattr(s, "lap_dist_m", 0.0) or 0.0) / dmax) * (w - left - 6)
+                y = mid - fn(s) * (lane_h / 2.0 - 6.0)
+                if prev is not None:
+                    if abs(x - prev[0]) > 160:  # Sprung ueber Start/Ziel: Linie unterbrechen
+                        prev = None
+                        continue
+                    p.drawLine(QPointF(prev[0], prev[1]), QPointF(x, y))
+                prev = (x, y)
 
 
 class TrackMapWidget(QWidget):
@@ -4871,6 +4979,22 @@ class Main(QMainWindow):
         sessions_layout.addLayout(_sess_btns)
         self.live_tabs.addTab(sessions_tab, "Sitzungen")
 
+        # 0.2.21: Telemetrie-Reiter - G-G-Diagramm + Spuren (G-Kraefte, Lenkung, Pedale)
+        telemetry_tab = QWidget(); telemetry_layout = QVBoxLayout(telemetry_tab)
+        telemetry_layout.addWidget(self._hint("G-Kräfte über der Runde: das G-G-Diagramm zeigt quer vs. längs (Farbe = Geschwindigkeit), darunter die Spuren für G-quer, G-längs, Lenkung und Gas/Bremse. Aktualisiert sich live während der Aufzeichnung (~alle 2 s) und nach dem Stop; über „Sitzungen → In Ansicht laden" auch für alte Aufzeichnungen."))
+        self.telemetry_gg = TelemetryGGWidget()
+        telemetry_layout.addWidget(self.telemetry_gg, 1)
+        self.telemetry_trace = TelemetryTraceWidget()
+        telemetry_layout.addWidget(self.telemetry_trace, 1)
+        self.telemetry_note = QLabel("")
+        self.telemetry_note.setStyleSheet("color: #8f8f99; font-size: 12px;")
+        telemetry_layout.addWidget(self.telemetry_note)
+        _tele_btns = QHBoxLayout()
+        _b_tele_ref = QPushButton("Aktualisieren"); _b_tele_ref.clicked.connect(self.update_telemetry_view)
+        _tele_btns.addStretch(1); _tele_btns.addWidget(_b_tele_ref)
+        telemetry_layout.addLayout(_tele_btns)
+        self.live_tabs.addTab(telemetry_tab, "Telemetrie")
+
         coach_tab = QWidget(); coach_layout = QVBoxLayout(coach_tab)
         coach_layout.addWidget(self._hint("Zusammenhängende Kurven-/Bremszonen mit Verlust, Priorität und Fahranweisung."))
         self.coach_text = QTextEdit(); self.coach_text.setReadOnly(True); self.coach_text.setStyleSheet("font-size:15px; line-height:1.35;")
@@ -6436,6 +6560,13 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 self._tm_len = len(self.samples)
                 self.trackmap.set_samples(self.samples)
                 self.trackmap.set_sector_info(self.official_sector_bounds())  # 0.2.9
+            # 0.2.21: Telemetrie-Reiter live aktualisieren (~alle 2 s)
+            self._tele_tick = getattr(self, "_tele_tick", 0) + 1
+            if self._tele_tick % 20 == 0 and hasattr(self, "telemetry_gg"):
+                try:
+                    self.update_telemetry_view()
+                except Exception:
+                    pass
         elif name == "Reifen":
             if s is not None:
                 self.update_tire_table(s)
@@ -7703,6 +7834,36 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         self.status.setText("🔴 RECORDING AKTIV – " + self.hotkey_config.get("record", "F8") + " stoppt und speichert Report/CSV automatisch.")
         self.refresh_dashboard()
 
+    def update_telemetry_view(self):
+        """0.2.21: Telemetrie-Reiter fuellen - G-G-Punkte + Spuren + Peak-Notiz."""
+        if not (hasattr(self, "telemetry_gg") and hasattr(self, "telemetry_trace")):
+            return
+        pts = []
+        for s in (self.samples or [])[-5000:]:
+            gl = float(getattr(s, "g_force_lat", 0.0) or 0.0)
+            gt = float(getattr(s, "g_force_long", 0.0) or 0.0)
+            if abs(gl) > 0.05 or abs(gt) > 0.05:
+                pts.append((gl, gt, float(s.speed_kmh)))
+        self.telemetry_gg.set_points(pts)
+        rows = []
+        for s in (self.samples or [])[-4000:]:
+            if float(getattr(s, "lap_dist_m", -1.0) or 0.0) >= 0 and float(s.speed_kmh) > 2.0:
+                rows.append(s)
+        self.telemetry_trace.set_rows(rows)
+        if rows:
+            gmax = 0.0
+            gmin = 0.0
+            for s in rows:
+                gl = abs(float(getattr(s, "g_force_lat", 0.0) or 0.0))
+                gt = float(getattr(s, "g_force_long", 0.0) or 0.0)
+                if gl > gmax:
+                    gmax = gl
+                if gt < gmin:
+                    gmin = gt
+            self.telemetry_note.setText("Peak quer " + f"{gmax:.2f}" + " g | max Längsverzögerung " + f"{gmin:.2f}" + " g | Samples: " + str(len(self.samples or [])))
+        else:
+            self.telemetry_note.setText("Noch keine gefahrenen Samples.")
+
     def stop_recording(self):
         if not self.recording:
             self.log.append("Recording ist nicht aktiv – Stop ignoriert.")
@@ -7718,6 +7879,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         self.update_segments()
         self.update_lap_compare()
         self.update_heatmap()
+        self.update_telemetry_view()  # 0.2.21
         self.update_coach_text()
         self.update_input_coach()
         self.autosave_exports()
@@ -8365,6 +8527,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         self.update_segments()
         self.update_lap_compare()
         self.update_heatmap()
+        self.update_telemetry_view()  # 0.2.21
         self.update_zone_table()
         self.update_input_coach()
         self.update_coach_text()
@@ -9864,6 +10027,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
