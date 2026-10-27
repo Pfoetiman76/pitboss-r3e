@@ -17,6 +17,7 @@ from typing import List, Optional, Tuple
 
 from PySide6.QtCore import QTimer, Qt, QPointF, QRectF, QUrl, qInstallMessageHandler, QThread, Signal, QObject
 from PySide6.QtWidgets import (
+    QAbstractItemView,  # 0.2.14: EditTrigger-Enum fuer den Sitzungs-Browser
     QApplication, QFileDialog, QGroupBox, QGridLayout, QHBoxLayout, QLabel,
     QLineEdit, QMainWindow, QMessageBox, QPushButton, QTableWidget, QComboBox,
     QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget, QTabWidget, QFrame,
@@ -30,7 +31,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.13 Beta"
+APP_VERSION = "0.2.14 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -4776,7 +4777,7 @@ class Main(QMainWindow):
         self.sessions_table.horizontalHeader().setStretchLastSection(True)
         self.sessions_table.setAlternatingRowColors(True)
         self.sessions_table.verticalHeader().setDefaultSectionSize(26)
-        self.sessions_table.setEditTriggers(0)  # QAbstractItemView.NoEditTriggers
+        self.sessions_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)  # 0.2.14: Enum statt 0 - PySide6 meldet sonst TypeError beim Start
         self.sessions_table.doubleClicked.connect(lambda _i: self.open_session_report())
         sessions_layout.addWidget(self.sessions_table, 1)
         _sess_btns = QHBoxLayout()
@@ -7994,6 +7995,28 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         self.reference_lap = manual_ref or (min(clean, key=lambda l: self.estimated_lap_time_from_speed(l.lap_number)) if clean else None)
         self.update_lap_overview_table()
         self.update_live_lap_table()  # 0.2.11
+        self.laps_table.setRowCount(0)
+        for lap in self.lap_summaries:
+            row = self.laps_table.rowCount(); self.laps_table.insertRow(row)
+            status = "REFERENZ" if self.reference_lap and lap.lap_number == self.reference_lap.lap_number else ("gültig" if lap.is_clean else "ausgeschlossen")
+            ch = self.telemetry_channels_active()
+            vals = [
+                lap.lap_number, status, lap.reason, lap.samples, f"{lap.coverage_m:.1f}",
+                fmt_lap_time(self.lap_time_for_report(lap)) if lap.is_complete else "— (unvollständig)",
+                f"{lap.max_speed:.1f}", f"{lap.avg_speed:.1f}", f"{lap.max_brake:.3f}",
+                f"{lap.fuel_used_l:.3f}" if ch["fuel"] else "— (Spiel aus)",
+                f"{lap.start_m:.1f}", f"{lap.end_m:.1f}",
+                f"stand={int(lap.has_standstill)} pit={int(lap.in_pits)}"
+            ]
+            for c, v in enumerate(vals):
+                self.laps_table.setItem(row, c, QTableWidgetItem(str(v)))
+        self.laps_table.resizeColumnsToContents()
+        self.refresh_lap_combos()
+        if self.reference_lap:
+            mode = "manuell" if self.manual_reference_lap == self.reference_lap.lap_number else "Auto"
+            self.log.append(f"Referenzrunde erkannt ({mode}): Lap {self.reference_lap.lap_number} | Avg {self.reference_lap.avg_speed:.1f} km/h | Fuel {self.reference_lap.fuel_used_l:.2f} L")
+        else:
+            self.log.append("Keine komplette saubere Referenzrunde erkannt. Bitte mindestens eine volle fliegende Runde aufzeichnen.")
 
     def update_live_lap_table(self):
         """0.2.11: kompakte Rundenliste in der Live-Ansicht im Results-Vorbild:
@@ -8176,28 +8199,6 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             names[p.name] = edit.text().strip()
             save_sessions_index(idx)
             self.refresh_sessions_table()
-        self.laps_table.setRowCount(0)
-        for lap in self.lap_summaries:
-            row = self.laps_table.rowCount(); self.laps_table.insertRow(row)
-            status = "REFERENZ" if self.reference_lap and lap.lap_number == self.reference_lap.lap_number else ("gültig" if lap.is_clean else "ausgeschlossen")
-            ch = self.telemetry_channels_active()
-            vals = [
-                lap.lap_number, status, lap.reason, lap.samples, f"{lap.coverage_m:.1f}",
-                fmt_lap_time(self.lap_time_for_report(lap)) if lap.is_complete else "— (unvollständig)",
-                f"{lap.max_speed:.1f}", f"{lap.avg_speed:.1f}", f"{lap.max_brake:.3f}",
-                f"{lap.fuel_used_l:.3f}" if ch["fuel"] else "— (Spiel aus)",
-                f"{lap.start_m:.1f}", f"{lap.end_m:.1f}",
-                f"stand={int(lap.has_standstill)} pit={int(lap.in_pits)}"
-            ]
-            for c, v in enumerate(vals):
-                self.laps_table.setItem(row, c, QTableWidgetItem(str(v)))
-        self.laps_table.resizeColumnsToContents()
-        self.refresh_lap_combos()
-        if self.reference_lap:
-            mode = "manuell" if self.manual_reference_lap == self.reference_lap.lap_number else "Auto"
-            self.log.append(f"Referenzrunde erkannt ({mode}): Lap {self.reference_lap.lap_number} | Avg {self.reference_lap.avg_speed:.1f} km/h | Fuel {self.reference_lap.fuel_used_l:.2f} L")
-        else:
-            self.log.append("Keine komplette saubere Referenzrunde erkannt. Bitte mindestens eine volle fliegende Runde aufzeichnen.")
 
     def update_segments(self):
         self.segment_table.setRowCount(0)
@@ -9633,6 +9634,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
