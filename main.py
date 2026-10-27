@@ -31,7 +31,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.25 Beta"
+APP_VERSION = "0.2.26 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -836,10 +836,15 @@ class TelemetryMapWidget(QWidget):
     def __init__(self):
         super().__init__()
         self.rows = []
+        self.outline = []  # 0.2.26: Strecken-Umriss aus allen Runden, damit die Karte lesbar bleibt
         self.setMinimumHeight(220)
 
     def set_rows(self, rows):
         self.rows = list(rows or [])
+        self.update()
+
+    def set_outline(self, rows):
+        self.outline = list(rows or [])
         self.update()
 
     def paintEvent(self, event):
@@ -852,8 +857,9 @@ class TelemetryMapWidget(QWidget):
             p.drawText(self.rect(), Qt.AlignCenter, "Input-Karte erscheint mit aufgezeichneter Fahrt")
             return
         w, h = self.width(), self.height()
-        xs = [float(s.pos_x) for s in rows]
-        ys = [float(s.pos_y) for s in rows]
+        base = self.outline if len(self.outline) >= 2 else rows
+        xs = [float(s.pos_x) for s in base]
+        ys = [float(s.pos_y) for s in base]
         minx, maxx = min(xs), max(xs)
         miny, maxy = min(ys), max(ys)
         span = max(maxx - minx, maxy - miny, 1.0)
@@ -865,6 +871,15 @@ class TelemetryMapWidget(QWidget):
             y = pad + (float(s.pos_y) - miny) / span * scale + max(0.0, (h - 2 * pad - scale) / 2.0)
             return (x, y)
 
+        # 0.2.26: Strecken-Umriss zuerst (duenn, grau), damit die Karte lesbar bleibt
+        if len(self.outline) >= 2:
+            prev = None
+            p.setPen(QPen(QColor(85, 85, 92), 2))
+            for s in self.outline:
+                x, y = pt(s)
+                if prev is not None and abs(x - prev[0]) + abs(y - prev[1]) < 400:
+                    p.drawLine(QPointF(prev[0], prev[1]), QPointF(x, y))
+                prev = (x, y)
         prev = None
         for s in rows:
             x, y = pt(s)
@@ -876,12 +891,18 @@ class TelemetryMapWidget(QWidget):
                         col = QColor(80, 200, 100)      # Gas
                     else:
                         col = QColor(120, 120, 128)    # rollen / Teilgas
-                    p.setPen(QPen(col, 3))
+                    p.setPen(QPen(col, 4))
                     p.drawLine(QPointF(prev[0], prev[1]), QPointF(x, y))
             prev = (x, y)
         x0, y0 = pt(rows[0])  # Start/Ziel-Marker
         p.setPen(QPen(QColor(235, 185, 60), 2))
         p.drawEllipse(QPointF(x0, y0), 4, 4)
+        # 0.2.26: aktuelle Position als gelber Punkt (deckender Ring)
+        cur = pt(rows[-1])
+        p.setPen(QPen(QColor(235, 185, 60), 2))
+        p.drawEllipse(QPointF(cur[0], cur[1]), 7, 7)
+        p.setPen(QPen(QColor(16, 16, 16), 2))
+        p.drawEllipse(QPointF(cur[0], cur[1]), 3, 3)
         p.setPen(QColor(150, 150, 158))
         p.drawText(QRectF(8, 4, 400, 16), Qt.AlignLeft, "Input-Karte: gruen = Gas, rot = Bremse, grau = rollen")
 
@@ -967,6 +988,10 @@ class TelemetryTraceWidget(QWidget):
             if prev is not None and abs(x - prev[0]) <= 160:
                 p.drawLine(QPointF(prev[0], prev[1]), QPointF(x, y))
             prev = (x, y)
+        # 0.2.26: gelber Positions-Streifen - wo man gerade auf der Runde ist
+        cur = px(rows[-1])
+        p.setPen(QPen(QColor(235, 185, 60), 2))
+        p.drawLine(QPointF(cur, 20), QPointF(cur, h - 2))
 
 
 class TrackMapWidget(QWidget):
@@ -1318,6 +1343,19 @@ class TrackMapWidget(QWidget):
             painter.setPen(QColor(230, 230, 230))
             painter.drawText(QRectF(8, 8, self.width() - 16, 44), Qt.AlignLeft,
                              "Heatmap: dicke rote Zonen + Nummern = Coach-Fokus | Grau=Referenz | Grün=besser | X=Sektorgrenze")
+            # 0.2.26: aktuelle Position auch im Heatmap-Modus als gelber Punkt
+            try:
+                cur = self.compare_samples or self.reference_samples or self.samples
+                if cur:
+                    s = cur[-1]
+                    if abs(float(s.pos_x)) > 0.001 or abs(float(s.pos_z)) > 0.001:
+                        q = map_pt(float(s.pos_x), float(s.pos_z))
+                        painter.setPen(QPen(QColor(235, 185, 60), 2))
+                        painter.drawEllipse(q, 7, 7)
+                        painter.setPen(QPen(QColor(16, 16, 16), 2))
+                        painter.drawEllipse(q, 3, 3)
+            except Exception:
+                pass
             self._draw_sector_marks(painter, map_pt)
         else:
             pts = self.samples
@@ -1332,9 +1370,9 @@ class TrackMapWidget(QWidget):
             draw_path(pts, live_pen, 0.0)
             last = pts[-1]
             painter.setBrush(QBrush(QColor(255, 230, 80)))
-            painter.setPen(QPen(QColor(0, 0, 0), 1))
+            painter.setPen(QPen(QColor(0, 0, 0), 2))
             lp = map_pt(last.pos_x, last.pos_z)
-            painter.drawEllipse(lp, 5, 5)
+            painter.drawEllipse(lp, 7, 7)  # 0.2.26: groesser, damit die Position klar erkennbar ist
             painter.setPen(QColor(220, 220, 220))
             painter.drawText(QRectF(8, 8, self.width() - 16, 20), Qt.AlignLeft, f"Samples: {len(self.samples)} | Speed max: {max_speed:.1f} km/h | Rot=Bremse | Grün=Gas | X=Sektorgrenze")
             self._draw_sector_marks(painter, map_pt)
@@ -7900,6 +7938,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 pass
         self.telemetry_trace.set_rows(rows)
         if hasattr(self, "telemetry_map"):
+            self.telemetry_map.set_outline(driven)  # 0.2.26: Strecken-Umriss aus allen Runden
             self.telemetry_map.set_rows(rows)
         if rows:
             tmax = 0.0
