@@ -31,7 +31,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.16 Beta"
+APP_VERSION = "0.2.17 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -141,6 +141,43 @@ def parse_session_report_meta(path) -> dict:
                     return 0.0
             meta["bestzeit"] = min(times, key=_tsec)
     return meta
+
+def _csv_coerce_value(value, ftype):
+    """0.2.17: CSV-Zellenwert passend zum Sample-Feldtyp umbauen."""
+    raw = str(value if value is not None else "").strip()
+    if ftype is bool:
+        try:
+            return float(raw) != 0.0
+        except Exception:
+            return False
+    if ftype is int:
+        try:
+            return int(float(raw))
+        except Exception:
+            return 0
+    if ftype is float:
+        try:
+            x = float(raw)
+            return x if math.isfinite(x) else 0.0
+        except Exception:
+            return 0.0
+    if ftype is tuple:
+        return ()
+    return raw  # str
+
+def load_samples_from_csv(path) -> List[Sample]:
+    """0.2.17: gespeicherte PitBoss-CSV wieder in Sample-Objekte laden
+    (Sitzungs-Browser: alte Aufzeichnung in die Ansicht laden)."""
+    hints = {f.name: f.type for f in _dc_fields(Sample)}
+    out: List[Sample] = []
+    with open(path, "r", newline="", encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            kwargs = {}
+            for key, val in row.items():
+                if key in hints:
+                    kwargs[key] = _csv_coerce_value(val, hints[key])
+            out.append(Sample(**kwargs))
+    return out
 
 # ---------------------------------------------------------------------------
 # 0.2.7: Start-Modus-Auswahl. Beim App-Start kann man sich auf einen Zweck
@@ -4818,8 +4855,9 @@ class Main(QMainWindow):
         _b_sess_show = QPushButton("Report anzeigen"); _b_sess_show.clicked.connect(self.open_session_report)
         _b_sess_ren = QPushButton("Umbenennen"); _b_sess_ren.clicked.connect(self.rename_session)
         _b_sess_del = QPushButton("Löschen"); _b_sess_del.clicked.connect(self.delete_session)
+        _b_sess_load = QPushButton("In Ansicht laden"); _b_sess_load.clicked.connect(self.load_session_into_views)
         _b_sess_ref = QPushButton("Aktualisieren"); _b_sess_ref.clicked.connect(self.refresh_sessions_table)
-        _sess_btns.addWidget(_b_sess_show); _sess_btns.addWidget(_b_sess_ren); _sess_btns.addWidget(_b_sess_del); _sess_btns.addStretch(1); _sess_btns.addWidget(_b_sess_ref)
+        _sess_btns.addWidget(_b_sess_show); _sess_btns.addWidget(_b_sess_ren); _sess_btns.addWidget(_b_sess_del); _sess_btns.addWidget(_b_sess_load); _sess_btns.addStretch(1); _sess_btns.addWidget(_b_sess_ref)
         sessions_layout.addLayout(_sess_btns)
         self.live_tabs.addTab(sessions_tab, "Sitzungen")
 
@@ -8276,6 +8314,52 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         save_sessions_index(idx)
         self.refresh_sessions_table()
         self.status.setText("Sitzung gelöscht: " + p.name)
+
+    def load_session_into_views(self):
+        """0.2.17: alte Aufzeichnung aus der zugehoerigen CSV in die Live-Ansicht
+        laden, damit Reifen/Analyse/Runden/Vergleich/Heatmap die alte Sitzung zeigen."""
+        p = self._selected_session_file()
+        if p is None:
+            self.status.setText("Sitzungen: keine Zeile markiert.")
+            return
+        if self.recording:
+            QMessageBox.warning(self, "Sitzung laden", "Recording läuft gerade. Bitte erst stoppen (F8), danach laden.")
+            return
+        stamp = p.stem.replace("r3e_live_recorder_", "", 1)
+        csv_path = CSV_DIR / ("r3e_live_recorder_samples_" + stamp + ".csv")
+        if not csv_path.is_file():
+            QMessageBox.warning(self, "Sitzung laden", "Zu dieser Aufzeichnung fehlt die CSV (r3e_live_recorder_samples_" + stamp + "). Ohne CSV können die Reiter nicht gefüllt werden.")
+            return
+        msg = ("Diese Aufzeichnung in die Ansicht laden?\n\n" + p.name +
+               "\n\nDer aktuelle Datenpuffer wird im Programm ersetzt - Dateien bleiben unberührt.")
+        if QMessageBox.question(self, "Sitzung laden", msg) != QMessageBox.Yes:
+            return
+        try:
+            samples = load_samples_from_csv(csv_path)
+        except Exception as e:
+            QMessageBox.warning(self, "Sitzung laden", "CSV konnte nicht gelesen werden: " + str(e))
+            return
+        if not samples:
+            QMessageBox.warning(self, "Sitzung laden", "CSV enthält keine Samples.")
+            return
+        self.samples = samples
+        self.last_live_sample = samples[-1]  # Live-Karten/Reifen-Tab mit altem Stand füllen
+        self.recording_signature = None
+        self.manual_reference_lap = None
+        self.manual_compare_lap = None
+        self.compare_lap = None
+        self.update_laps()  # Referenz + Runden-/Live-Runden-Tabellen
+        ref_samples = self.samples_for_reference_lap()
+        self.trackmap.set_samples(ref_samples if ref_samples else self.samples)
+        self.trackmap.set_sector_info(self.official_sector_bounds())
+        self.update_segments()
+        self.update_lap_compare()
+        self.update_heatmap()
+        self.update_zone_table()
+        self.update_input_coach()
+        self.update_coach_text()
+        self.status.setText("Alte Sitzung geladen: " + p.name + " (" + str(len(samples)) + " Samples)")
+        self.log.append("Sitzung aus CSV geladen: " + p.name + " | Samples: " + str(len(samples)))
 
     def update_segments(self):
         self.segment_table.setRowCount(0)
