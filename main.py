@@ -31,7 +31,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.19 Beta"
+APP_VERSION = "0.2.20 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -754,6 +754,15 @@ class Sample:
     pit_total_s: float = -1.0
     track_length_m: float = 0.0       # 0.2.9: layout_length aus dem Spiel (0 = unbekannt)
     sector_bounds_m: tuple = ()       # 0.2.9: offizielle innere Sektorgrenzen in m (S1-Ende, S2-Ende); leer = unbekannt
+    # 0.2.20: zusaetzliche Telemetrie-Kanaele (Reader -> Sample -> CSV)
+    g_force_lat: float = 0.0          # 0.2.20: Quer-G-Kraft (mLocalGForce.x)
+    g_force_long: float = 0.0          # 0.2.20: Laengs-G-Kraft (mLocalGForce.z)
+    heading_deg: float = 0.0           # 0.2.20: Fahrtrichtung in Grad (Gierrate-Yaw)
+    velocity_lat_ms: float = 0.0       # 0.2.20: seitliche Geschwindigkeit m/s
+    velocity_long_ms: float = 0.0      # 0.2.20: laengs Geschwindigkeit m/s (Vorzeichen)
+    engine_torque_nm: float = 0.0      # 0.2.20: Motordrehmoment Nm
+    tc_on: bool = False                # 0.2.20: Traktionskontrolle aktiv (aid_settings.tc >= 1)
+    esp_on: bool = False               # 0.2.20: ESP aktiv (aid_settings.esp >= 1)
 
 
 
@@ -9735,7 +9744,26 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 "tire_fl_pressure_bar", "tire_fr_pressure_bar", "tire_rl_pressure_bar", "tire_rr_pressure_bar",
                 "tire_fl_flat", "tire_fr_flat", "tire_rl_flat", "tire_rr_flat",
                 "tire_fl_grip_fract", "tire_fr_grip_fract", "tire_rl_grip_fract", "tire_rr_grip_fract",
-                "tire_fl_flatspot_status", "tire_fr_flatspot_status", "tire_rl_flatspot_status", "tire_rr_flatspot_status"
+                "tire_fl_flatspot_status", "tire_fr_flatspot_status", "tire_rl_flatspot_status", "tire_rr_flatspot_status",
+                # 0.2.20: bisher nur live vorhandene Kanaele jetzt auch dauerhaft in der CSV
+                "accel_lat_ms2", "accel_long_ms2",
+                "g_force_lat", "g_force_long",
+                "heading_deg", "velocity_lat_ms", "velocity_long_ms", "engine_torque_nm",
+                "input_throttle", "input_brake", "input_clutch", "input_steering",
+                "tc_on", "esp_on",
+                "sector_index", "cur_sector1_s", "cur_sector2_s", "last_sector1_s", "last_sector2_s", "best_sector1_s", "best_sector2_s",
+                "brake_fl_temp_raw", "brake_fr_temp_raw", "brake_rl_temp_raw", "brake_rr_temp_raw",
+                "max_rpm", "virtual_energy", "ffb_torque", "steering_shaft_torque",
+                "pit_state", "speed_limiter", "num_pitstops", "pit_window_status", "pit_elapsed_s", "pit_total_s",
+                "gap_ahead_s", "gap_behind_s", "gap_leader_s",
+                "abs_on",
+                "dmg_engine_pct", "dmg_transmission_pct", "dmg_aero_pct", "dmg_suspension_pct",
+                "tire_temp_cold_c", "tire_temp_opt_c", "tire_temp_hot_c",
+                "rear_brake_bias", "brake_fl_pressure", "brake_fr_pressure", "brake_rl_pressure", "brake_rr_pressure",
+                "tire_fl_slip_ms", "tire_fr_slip_ms", "tire_rl_slip_ms", "tire_rr_slip_ms",
+                "session_type", "session_remaining_s", "session_current_et", "session_end_et",
+                "game_phase", "yellow_flag_state", "player_flag",
+                "track_length_m"
             ])
             for s in self.samples:
                 w.writerow([
@@ -9758,7 +9786,26 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                     self.flatspot_status(s.tire_fl_flat, s.tire_fl_grip_fract, s.brake, s.speed_kmh),
                     self.flatspot_status(s.tire_fr_flat, s.tire_fr_grip_fract, s.brake, s.speed_kmh),
                     self.flatspot_status(s.tire_rl_flat, s.tire_rl_grip_fract, s.brake, s.speed_kmh),
-                    self.flatspot_status(s.tire_rr_flat, s.tire_rr_grip_fract, s.brake, s.speed_kmh)
+                    self.flatspot_status(s.tire_rr_flat, s.tire_rr_grip_fract, s.brake, s.speed_kmh),
+                    # 0.2.20: zusaetzliche Telemetrie-Kanaele, Reihenfolge exakt wie der Header
+                    f"{s.accel_lat_ms2:.6f}", f"{s.accel_long_ms2:.6f}",
+                    f"{s.g_force_lat:.6f}", f"{s.g_force_long:.6f}",
+                    f"{s.heading_deg:.6f}", f"{s.velocity_lat_ms:.6f}", f"{s.velocity_long_ms:.6f}", f"{s.engine_torque_nm:.6f}",
+                    f"{s.input_throttle:.6f}", f"{s.input_brake:.6f}", f"{s.input_clutch:.6f}", f"{s.input_steering:.6f}",
+                    int(s.tc_on), int(s.esp_on),
+                    s.sector_index, f"{s.cur_sector1_s:.6f}", f"{s.cur_sector2_s:.6f}", f"{s.last_sector1_s:.6f}", f"{s.last_sector2_s:.6f}", f"{s.best_sector1_s:.6f}", f"{s.best_sector2_s:.6f}",
+                    f"{s.brake_fl_temp_raw:.6f}", f"{s.brake_fr_temp_raw:.6f}", f"{s.brake_rl_temp_raw:.6f}", f"{s.brake_rr_temp_raw:.6f}",
+                    f"{s.max_rpm:.6f}", f"{s.virtual_energy:.6f}", f"{s.ffb_torque:.6f}", f"{s.steering_shaft_torque:.6f}",
+                    s.pit_state, int(s.speed_limiter), s.num_pitstops, s.pit_window_status, f"{s.pit_elapsed_s:.6f}", f"{s.pit_total_s:.6f}",
+                    f"{s.gap_ahead_s:.6f}", f"{s.gap_behind_s:.6f}", f"{s.gap_leader_s:.6f}",
+                    int(s.abs_on),
+                    f"{s.dmg_engine_pct:.6f}", f"{s.dmg_transmission_pct:.6f}", f"{s.dmg_aero_pct:.6f}", f"{s.dmg_suspension_pct:.6f}",
+                    f"{s.tire_temp_cold_c:.6f}", f"{s.tire_temp_opt_c:.6f}", f"{s.tire_temp_hot_c:.6f}",
+                    f"{s.rear_brake_bias:.6f}", f"{s.brake_fl_pressure:.6f}", f"{s.brake_fr_pressure:.6f}", f"{s.brake_rl_pressure:.6f}", f"{s.brake_rr_pressure:.6f}",
+                    f"{s.tire_fl_slip_ms:.6f}", f"{s.tire_fr_slip_ms:.6f}", f"{s.tire_rl_slip_ms:.6f}", f"{s.tire_rr_slip_ms:.6f}",
+                    s.session_type, f"{s.session_remaining_s:.6f}", f"{s.session_current_et:.6f}", f"{s.session_end_et:.6f}",
+                    s.game_phase, s.yellow_flag_state, s.player_flag,
+                    f"{s.track_length_m:.6f}"
                 ])
     def save_csv(self):
         # 4.2.4: Direkt speichern statt Dateidialog, passend zum Auto-Save.
@@ -9817,7 +9864,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
 
 
