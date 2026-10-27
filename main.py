@@ -31,7 +31,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.17 Beta"
+APP_VERSION = "0.2.18 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -165,9 +165,10 @@ def _csv_coerce_value(value, ftype):
         return ()
     return raw  # str
 
-def load_samples_from_csv(path) -> List[Sample]:
+def load_samples_from_csv(path):
     """0.2.17: gespeicherte PitBoss-CSV wieder in Sample-Objekte laden
-    (Sitzungs-Browser: alte Aufzeichnung in die Ansicht laden)."""
+    (Sitzungs-Browser: alte Aufzeichnung in die Ansicht laden).
+    0.2.18: Ohne Return-Annotation - Sample ist erst weiter unten definiert."""
     hints = {f.name: f.type for f in _dc_fields(Sample)}
     out: List[Sample] = []
     with open(path, "r", newline="", encoding="utf-8") as fh:
