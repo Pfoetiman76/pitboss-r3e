@@ -30,7 +30,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.10 Beta"
+APP_VERSION = "0.2.11 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -4620,21 +4620,36 @@ class Main(QMainWindow):
         self.tabs.addTab(dash_tab, "Dashboard")
 
         live_tab = QWidget(); live_layout = QVBoxLayout(live_tab)
+        # 0.2.11: Layout im Stil einer Results-Comparison (Vorbild-Screenshot):
+        # Trackmap links, rechts Live-Zeile + Sektorzeiten + kompakte Rundenliste
+        # mit farbcodierten Sektorzeiten (gruen = beste, rot = schwaecheste).
         self.trackmap = TrackMapWidget()
-        live_layout.addWidget(self.trackmap, stretch=2)
+        self.trackmap.setMinimumWidth(320)
         self.live_summary = QTableWidget(0, 8)
         self.live_summary.setHorizontalHeaderLabels([
             "Aktuelle Runde", "Track m", "Speed", "Gang", "Fuel", "Letzte Runde", "Beste Runde", "Status"
         ])
         self.live_summary.horizontalHeader().setStretchLastSection(True)
-        live_layout.addWidget(self._hint("Live-Übersicht: Runden- und Statusdaten. Overlays über das Menü oben, " + self.hotkey_config.get("overlay", "F10") + " (Monitor) und " + self.hotkey_config.get("tire_overlay", "F6") + " (Reifen)."))
         self.sector_label = QLabel("Sektorzeiten: warte auf erste vollst\u00e4ndige Runde \u2026")  # 0.4.9.0
         self.sector_label.setWordWrap(True)
-        live_layout.addWidget(self.sector_label)
         self.brake_status_label = QLabel("Bremsen: warte auf Telemetrie \u2026")  # 0.4.9.4
         self.brake_status_label.setWordWrap(True)
-        live_layout.addWidget(self.brake_status_label)
-        live_layout.addWidget(self.live_summary, stretch=1)
+        self.live_lap_table = QTableWidget(0, 7)  # 0.2.11: Rundenliste im Results-Stil
+        self.live_lap_table.setHorizontalHeaderLabels(["Lap", "Zeit", "S1", "S2", "S3", "Gap", "Fuel L"])
+        self.live_lap_table.horizontalHeader().setStretchLastSection(True)
+        self.live_lap_table.setAlternatingRowColors(True)
+        self.live_lap_table.verticalHeader().setDefaultSectionSize(26)
+        _live_right = QWidget(); _live_right.setProperty("plain", True)
+        _live_right_layout = QVBoxLayout(_live_right); _live_right_layout.setContentsMargins(8, 0, 0, 0)
+        _live_right_layout.addWidget(self.live_summary)
+        _live_right_layout.addWidget(self.sector_label)
+        _live_right_layout.addWidget(self.brake_status_label)
+        _live_right_layout.addWidget(self.live_lap_table, 1)
+        _live_split = QHBoxLayout()
+        _live_split.addWidget(self.trackmap, 3)
+        _live_split.addWidget(_live_right, 4)
+        live_layout.addLayout(_live_split)
+        live_layout.addWidget(self._hint("Live-Übersicht: Runden- und Statusdaten. Overlays über das Menü oben, " + self.hotkey_config.get("overlay", "F10") + " (Monitor) und " + self.hotkey_config.get("tire_overlay", "F6") + " (Reifen)."))
         self.tabs.addTab(live_tab, "Live")
 
         tires_tab = QWidget(); tires_layout = QVBoxLayout(tires_tab)
@@ -7391,6 +7406,10 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 self.maybe_export_live_bestlap(completed, self.live_lap_number)
                 self.live_coach.on_lap_completed(completed, self.live_lap_number,
                                                  self.live_delta_s, self.live_coach_line)
+                try:
+                    self.update_laps()  # 0.2.11: Live-Rundenliste direkt nach Rundenwechsel aktualisieren
+                except Exception:
+                    pass
             self.live_lap_number = s.lap_number
             self.live_lap_samples = []
             self.live_delta_s = None
@@ -7552,7 +7571,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         if self.recording:
             self.log.append("Recording läuft bereits – Start ignoriert.")
             return
-        self.samples.clear(); self.lap_summaries.clear(); self.reference_lap = None; self.compare_lap = None; self.segment_deltas = []; self.manual_reference_lap = None; self.manual_compare_lap = None; self.auto_bestlap_export_path = None; self.auto_bestlap_lap_number = None; self.auto_bestlap_time_s = None; self.live_best_reference_segments = {}; self.live_best_reference_lap = None; self.live_best_reference_time_s = None; self.recording_signature = None; self.rejected_sample_count = 0; self.pending_switch_signature = None; self.pending_switch_count = 0; self.live_summary.setRowCount(0); self.segment_table.setRowCount(0); self.zone_table.setRowCount(0); self.laps_table.setRowCount(0); self.lap_overview_table.setRowCount(0); self.compare_table.setRowCount(0); self.coach_text.clear(); self.limit_coach_text.clear() if hasattr(self, "limit_coach_text") else None;
+        self.samples.clear(); self.lap_summaries.clear(); self.reference_lap = None; self.compare_lap = None; self.segment_deltas = []; self.manual_reference_lap = None; self.manual_compare_lap = None; self.auto_bestlap_export_path = None; self.auto_bestlap_lap_number = None; self.auto_bestlap_time_s = None; self.live_best_reference_segments = {}; self.live_best_reference_lap = None; self.live_best_reference_time_s = None; self.recording_signature = None; self.rejected_sample_count = 0; self.pending_switch_signature = None; self.pending_switch_count = 0; self.live_summary.setRowCount(0); self.segment_table.setRowCount(0); self.zone_table.setRowCount(0); self.laps_table.setRowCount(0); self.lap_overview_table.setRowCount(0); self.live_lap_table.setRowCount(0) if hasattr(self, "live_lap_table") else None; self.compare_table.setRowCount(0); self.coach_text.clear(); self.limit_coach_text.clear() if hasattr(self, "limit_coach_text") else None;
         self.input_table.setRowCount(0) if hasattr(self, "input_table") else None; self.input_coach_text.clear() if hasattr(self, "input_coach_text") else None; self.trackmap.set_samples([]);
         self.heatmap.set_samples([]) if hasattr(self, 'heatmap') else None; self.refresh_lap_combos()
         self.recording = True; self.timer.start()
@@ -7584,7 +7603,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         self.refresh_dashboard()
 
     def clear(self):
-        self.samples.clear(); self.lap_summaries.clear(); self.reference_lap = None; self.compare_lap = None; self.segment_deltas = []; self.manual_reference_lap = None; self.manual_compare_lap = None; self.auto_bestlap_export_path = None; self.auto_bestlap_lap_number = None; self.auto_bestlap_time_s = None; self.live_best_reference_segments = {}; self.live_best_reference_lap = None; self.live_best_reference_time_s = None; self.live_summary.setRowCount(0); self.segment_table.setRowCount(0); self.zone_table.setRowCount(0); self.laps_table.setRowCount(0); self.lap_overview_table.setRowCount(0); self.compare_table.setRowCount(0); self.coach_text.clear(); self.limit_coach_text.clear() if hasattr(self, "limit_coach_text") else None;
+        self.samples.clear(); self.lap_summaries.clear(); self.reference_lap = None; self.compare_lap = None; self.segment_deltas = []; self.manual_reference_lap = None; self.manual_compare_lap = None; self.auto_bestlap_export_path = None; self.auto_bestlap_lap_number = None; self.auto_bestlap_time_s = None; self.live_best_reference_segments = {}; self.live_best_reference_lap = None; self.live_best_reference_time_s = None; self.live_summary.setRowCount(0); self.segment_table.setRowCount(0); self.zone_table.setRowCount(0); self.laps_table.setRowCount(0); self.lap_overview_table.setRowCount(0); self.live_lap_table.setRowCount(0) if hasattr(self, "live_lap_table") else None; self.compare_table.setRowCount(0); self.coach_text.clear(); self.limit_coach_text.clear() if hasattr(self, "limit_coach_text") else None;
         self.input_table.setRowCount(0) if hasattr(self, "input_table") else None; self.input_coach_text.clear() if hasattr(self, "input_coach_text") else None; self.trackmap.set_samples([]);
         self.heatmap.set_samples([]) if hasattr(self, 'heatmap') else None; self.refresh_lap_combos(); self.log.clear()
         self.status.setText("Gelöscht.")
@@ -7936,6 +7955,64 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             manual_ref = None
         self.reference_lap = manual_ref or (min(clean, key=lambda l: self.estimated_lap_time_from_speed(l.lap_number)) if clean else None)
         self.update_lap_overview_table()
+        self.update_live_lap_table()  # 0.2.11
+
+    def update_live_lap_table(self):
+        """0.2.11: kompakte Rundenliste in der Live-Ansicht im Results-Vorbild:
+        Zeit/S1/S2/S3 farbcodiert (gruen = beste, rot = schwaecheste saubere Runde),
+        Gap zur besten Runde, Fuel am Rundenende."""
+        if not hasattr(self, "live_lap_table"):
+            return
+        self.live_lap_table.setRowCount(0)
+        rows = []
+        for lap in self.lap_summaries:
+            s1, s2, s3, dur, mn, mx, avg = self.lap_sector_overview(lap)
+            rows.append((lap, s1, s2, s3, dur))
+        if not rows:
+            return
+        clean_rows = [r for r in rows if r[0].is_clean and r[0].is_complete]
+        bests = {}
+        worsts = {}
+        for idx in (1, 2, 3, 4):
+            vals = [r[idx] for r in clean_rows if r[idx] > 0]
+            if vals:
+                bests[idx] = min(vals)
+                worsts[idx] = max(vals)
+        cand = [r for r in clean_rows if r[4] > 0]
+        best = min(cand, key=lambda r: r[4]) if cand else None
+        best_no = best[0].lap_number if best else None
+        best_dur = best[4] if best else 0.0
+        for lap, s1, s2, s3, dur in rows:
+            row = self.live_lap_table.rowCount(); self.live_lap_table.insertRow(row)
+            if not lap.is_complete:
+                vals = ["Lap %d" % lap.lap_number, "\u2014", "\u2014", "\u2014", "\u2014", "\u2014", "\u2014"]
+                raw = [None, 0.0, 0.0, 0.0, 0.0, None, None]
+            else:
+                gap = (dur - best_dur) if (lap.is_clean and best_dur > 0 and dur > 0) else None
+                fuel_end = float(getattr(lap, "fuel_end_l", 0.0) or 0.0)
+                vals = [
+                    "Lap %d" % lap.lap_number,
+                    fmt_lap_time(dur), fmt_lap_time(s1), fmt_lap_time(s2), fmt_lap_time(s3),
+                    (fmt_lap_time(gap, signed=True) if gap is not None else "\u2014"),
+                    ("%.1f" % fuel_end if fuel_end > 0 else "\u2014"),
+                ]
+                raw = [None, s1, s2, s3, dur, gap, None]
+            for c, v in enumerate(vals):
+                item = QTableWidgetItem(str(v))
+                item.setTextAlignment(Qt.AlignCenter)
+                if not lap.is_clean:
+                    item.setBackground(QColor(120, 80, 80, 120))
+                elif best_no is not None and lap.lap_number == best_no:
+                    item.setBackground(QColor(80, 120, 80, 160))
+                elif c in (1, 2, 3, 4) and raw[c] and raw[c] > 0:
+                    if c in bests and abs(raw[c] - bests[c]) < 0.001:
+                        item.setBackground(QColor(85, 150, 95, 170))
+                    elif c in worsts and abs(raw[c] - worsts[c]) < 0.001:
+                        item.setBackground(QColor(160, 85, 85, 160))
+                if best_no is not None and lap.lap_number == best_no and c == 0:
+                    item.setText("Lap %d BEST" % lap.lap_number)
+                self.live_lap_table.setItem(row, c, item)
+        self.live_lap_table.resizeColumnsToContents()
         self.laps_table.setRowCount(0)
         for lap in self.lap_summaries:
             row = self.laps_table.rowCount(); self.laps_table.insertRow(row)
@@ -9401,6 +9478,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
