@@ -30,7 +30,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.9 Beta"
+APP_VERSION = "0.2.10 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -59,6 +59,30 @@ OVERLAY_SIZES_PATH = EXPORT_DIR / "overlay_sizes.json"  # 0.4.9.8: Overlay-Groes
 BLINDSPOT_CONFIG_PATH = EXPORT_DIR / "blindspot.json"  # 0.5.9.13: Toter-Winkel (Flip)
 HOTKEY_CONFIG_PATH = EXPORT_DIR / "hotkeys.json"  # 0.2.5: frei belegbare Hotkeys (Stream Deck)
 START_MODE_PATH = EXPORT_DIR / "start_mode.json"  # 0.2.7: gemerkter Start-Modus
+UI_LAYOUT_PATH = EXPORT_DIR / "ui_layout.json"  # 0.2.10: Einfache Ansicht vs. Experte
+
+# 0.2.10: Einfache Ansicht - nur diese Hauptansichten, der Rest bleibt
+# ueber den Experte-Modus (Mehr > Einfache Ansicht) erreichbar. Nichts wird geloescht.
+SIMPLE_VIEWS = ("Dashboard", "Live", "Coach")
+
+def load_ui_layout() -> bool:
+    """0.2.10: True = Einfache Ansicht (Standard), False = Experte mit allen Ansichten."""
+    try:
+        raw = json.loads(UI_LAYOUT_PATH.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            return bool(raw.get("simple", True))
+    except Exception:
+        pass
+    return True
+
+def save_ui_layout(simple: bool) -> bool:
+    """0.2.10: Ansichts-Modus in Dokumente\\PitBoss R3E\\ui_layout.json speichern."""
+    try:
+        EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        UI_LAYOUT_PATH.write_text(json.dumps({"simple": bool(simple)}, indent=2), encoding="utf-8")
+        return True
+    except Exception:
+        return False
 
 # ---------------------------------------------------------------------------
 # 0.2.7: Start-Modus-Auswahl. Beim App-Start kann man sich auf einen Zweck
@@ -4490,6 +4514,12 @@ class Main(QMainWindow):
         _more.addAction("Live-Telemetrie-Log (Debug) ein/aus", self.btn_live_log.click)
         _more.addAction("Hotkeys belegen …", self.open_hotkey_settings)  # 0.2.5
         _more.addAction("Start-Modus wählen …", lambda: self.select_start_mode(force=True))  # 0.2.7
+        self.act_ui_simple = _more.addAction("Einfache Ansicht (nur Dashboard/Live/Coach)")  # 0.2.10
+        self.act_ui_simple.setCheckable(True)
+        self.act_ui_simple.setChecked(getattr(self, "ui_simple", True))
+        # 0.2.10: Signal erst NACH setChecked verbinden, sonst ueberschreibt der
+        # Start-Zustand beim erstensetChecked die gemerkte Auswahl in ui_layout.json.
+        self.act_ui_simple.toggled.connect(self.toggle_ui_mode)
         _more.addSeparator()
         _more.addAction("Export-Ordner öffnen", self.btn_export.click)
         _more.addAction("Aufzeichnung löschen", self.btn_clear.click)
@@ -4820,6 +4850,9 @@ class Main(QMainWindow):
         _ver = QLabel(f"PitBoss R3E  v{APP_VERSION}"); _ver.setObjectName("verLabel")
         self.nav_box.addWidget(_ver)
         self.tabs.currentChanged.connect(self._on_tab_changed)
+        # 0.2.10: Einfache Ansicht (Standard): nur Dashboard/Live/Coach sichtbar
+        self.ui_simple = load_ui_layout()
+        self.apply_ui_mode()
         self.show_view("Dashboard")
         self.view_timer = QTimer(self)  # 0.2.0: 2 Hz, nur sichtbare Ansicht
         self.view_timer.setInterval(500)
@@ -5657,12 +5690,38 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
 
     def nav_step(self, delta):
         """0.2.2: Pfeile der Navigation: eine Ansicht vor/zurueck (in Reihenfolge der Reiter)."""
-        keys = list(self.nav_buttons.keys())
+        keys = [k for k, b in self.nav_buttons.items() if not b.isHidden()]  # 0.2.10: versteckte (Einfache Ansicht) ueberspringen
         cur = next((k for k, b in self.nav_buttons.items() if b.isChecked()), keys[0] if keys else None)
         if cur is None:
             return
         i = max(0, min(len(keys) - 1, keys.index(cur) + delta))
         self.show_view(keys[i])
+
+    def apply_ui_mode(self):
+        """0.2.10: Einfache Ansicht - Navi-Buttons der Nebenansichten verstecken/zeigen."""
+        simple = getattr(self, "ui_simple", True)
+        for key, b in getattr(self, "nav_buttons", {}).items():
+            b.setHidden(simple and key not in SIMPLE_VIEWS)
+        if simple:
+            cur = next((k for k, b in self.nav_buttons.items() if b.isChecked()), None)
+            if cur is not None and cur not in SIMPLE_VIEWS:
+                self.show_view("Dashboard")
+        act = getattr(self, "act_ui_simple", None)
+        if act is not None:
+            act.setChecked(simple)
+
+    def toggle_ui_mode(self, simple=None):
+        """0.2.10: Einfache <-> Experte-Ansicht umschalten und merken."""
+        if simple is None:
+            simple = not getattr(self, "ui_simple", True)
+        self.ui_simple = bool(simple)
+        save_ui_layout(self.ui_simple)
+        self.apply_ui_mode()
+        label = "Einfache Ansicht (Dashboard/Live/Coach)" if self.ui_simple else "Experte-Ansicht (alle Ansichten)"
+        if hasattr(self, "status"):
+            self.status.setText("Ansicht: " + label + " | umschalten: Mehr \u25be \u2192 Einfache Ansicht")
+        if hasattr(self, "log"):
+            self.log.append("Ansicht umgeschaltet: " + label)
 
     def _tag_plain_containers(self):
         """0.2.2: Reine Layout-Container werden transparent, damit der Verlaufshintergrund
@@ -9198,6 +9257,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             f"Samples: {len(self.samples)}",
             ("Aufnahmetyp: Kurzaufnahme/Snapshot" if len(self.samples) < 100 else "Aufnahmetyp: Session/Recording"),
             f"Start-Modus: {self.start_mode_label_current()}",
+            ("Ansicht: Einfach (Dashboard/Live/Coach)" if getattr(self, "ui_simple", True) else "Ansicht: Experte (alle Ansichten)"),  # 0.2.10
             f"Recording-Fahrzeug-Lock: {self.sample_vehicle_label(self.recording_signature) if self.recording_signature else 'nicht aktiv/kein Lock'}",
             f"Verworfene Samples wegen Fahrzeug-/Klassenwechsel/ungültig: {self.rejected_sample_count}",
             "",
@@ -9341,6 +9401,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
