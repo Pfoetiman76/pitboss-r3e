@@ -926,6 +926,15 @@ class R3EReader:
             pit_window_status=_na_int(d.pit_window_status, -1),
             pit_elapsed_s=_pos(d.pit_elapsed_time, -1.0),
             pit_total_s=_pos(d.pit_total_duration, -1.0),
+            # 0.2.20: zusaetzliche Telemetrie-Kanaele fuer CSV/Analyse
+            g_force_lat=_f(P.local_g_force.x),
+            g_force_long=_f(P.local_g_force.z),
+            heading_deg=math.degrees(_f(P.orientation.yaw)) % 360.0,
+            velocity_lat_ms=_f(P.local_velocity.x),
+            velocity_long_ms=_f(P.local_velocity.z),
+            engine_torque_nm=_f(P.engine_torque),
+            tc_on=_na_int(d.aid_settings.tc, 0) >= 1,
+            esp_on=_na_int(d.aid_settings.esp, 0) >= 1,
             track_length_m=_pos(d.layout_length),          # 0.2.9: layout_length aus dem Spiel
             sector_bounds_m=self._sector_bounds_m(d),      # 0.2.9: offizielle Sektorgrenzen in m
         )
