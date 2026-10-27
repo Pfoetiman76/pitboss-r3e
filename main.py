@@ -31,7 +31,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.18 Beta"
+APP_VERSION = "0.2.19 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -9771,6 +9771,27 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
     def closeEvent(self, event):  # 0.5.9.26: Live-Log beim Beenden sauber schliessen
         if getattr(self, "live_log_enabled", False):
             self.stop_live_log()
+        # 0.2.19: Alle Overlay-Fenster schliessen. Die Overlays sind rahmenlose
+        # Qt.Window-Fenster ohne Parent - sie hielten den Prozess am Leben und
+        # das Reifen-Overlay blieb nach dem Beenden des Hauptfensters stehen
+        # und liess sich nicht mehr schliessen.
+        for w in self.all_overlay_windows():
+            try:
+                w.close()
+                w.deleteLater()
+            except Exception:
+                pass
+        # Sicherheitsnetz: auch Overlays auswaendiger Referenzen (Duplikate) schliessen
+        try:
+            for w in QApplication.topLevelWidgets():
+                if isinstance(w, OverlayWindow) or isinstance(w, TireOverlayWindow):
+                    try:
+                        w.close()
+                        w.deleteLater()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
         super().closeEvent(event)
 
 
