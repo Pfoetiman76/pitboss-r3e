@@ -31,7 +31,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.15 Beta"
+APP_VERSION = "0.2.16 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -4817,8 +4817,9 @@ class Main(QMainWindow):
         _sess_btns = QHBoxLayout()
         _b_sess_show = QPushButton("Report anzeigen"); _b_sess_show.clicked.connect(self.open_session_report)
         _b_sess_ren = QPushButton("Umbenennen"); _b_sess_ren.clicked.connect(self.rename_session)
+        _b_sess_del = QPushButton("Löschen"); _b_sess_del.clicked.connect(self.delete_session)
         _b_sess_ref = QPushButton("Aktualisieren"); _b_sess_ref.clicked.connect(self.refresh_sessions_table)
-        _sess_btns.addWidget(_b_sess_show); _sess_btns.addWidget(_b_sess_ren); _sess_btns.addStretch(1); _sess_btns.addWidget(_b_sess_ref)
+        _sess_btns.addWidget(_b_sess_show); _sess_btns.addWidget(_b_sess_ren); _sess_btns.addWidget(_b_sess_del); _sess_btns.addStretch(1); _sess_btns.addWidget(_b_sess_ref)
         sessions_layout.addLayout(_sess_btns)
         self.live_tabs.addTab(sessions_tab, "Sitzungen")
 
@@ -8243,6 +8244,38 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             names[p.name] = edit.text().strip()
             save_sessions_index(idx)
             self.refresh_sessions_table()
+
+    def delete_session(self):
+        """0.2.16: gespeicherte Sitzung loeschen (Report-Datei + passende CSV + Index-Eintraege)."""
+        p = self._selected_session_file()
+        if p is None or not p.is_file():
+            self.status.setText("Sitzungen: keine Zeile markiert.")
+            return
+        msg = ("Diese Aufzeichnung wirklich löschen?\n\n" + p.name +
+               "\n\nDie zugehörige CSV wird mitgelöscht. Das kann nicht rückgängig gemacht werden.")
+        if QMessageBox.question(self, "Sitzung löschen", msg) != QMessageBox.Yes:
+            return
+        try:
+            p.unlink()
+        except Exception as e:
+            QMessageBox.warning(self, "Sitzung löschen", "Datei konnte nicht gelöscht werden: " + str(e))
+            return
+        # 0.2.16: passende CSV (gleicher Zeitstempel) mitloeschen
+        csv_candidate = CSV_DIR / ("r3e_live_recorder_samples_" + p.stem.replace("r3e_live_recorder_", "", 1) + ".csv")
+        try:
+            if csv_candidate.is_file():
+                csv_candidate.unlink()
+        except Exception:
+            pass
+        # 0.2.16: Eintraege aus dem Sitzungs-Index entfernen
+        idx = load_sessions_index()
+        names = idx.get("names", {}) if isinstance(idx, dict) else {}
+        meta = idx.get("meta", {}) if isinstance(idx, dict) else {}
+        names.pop(p.name, None)
+        meta.pop(p.name, None)
+        save_sessions_index(idx)
+        self.refresh_sessions_table()
+        self.status.setText("Sitzung gelöscht: " + p.name)
 
     def update_segments(self):
         self.segment_table.setRowCount(0)
