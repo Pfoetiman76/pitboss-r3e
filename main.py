@@ -31,7 +31,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.21 Beta"
+APP_VERSION = "0.2.22 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -4981,7 +4981,7 @@ class Main(QMainWindow):
 
         # 0.2.21: Telemetrie-Reiter - G-G-Diagramm + Spuren (G-Kraefte, Lenkung, Pedale)
         telemetry_tab = QWidget(); telemetry_layout = QVBoxLayout(telemetry_tab)
-        telemetry_layout.addWidget(self._hint("G-Kräfte über der Runde: das G-G-Diagramm zeigt quer vs. längs (Farbe = Geschwindigkeit), darunter die Spuren für G-quer, G-längs, Lenkung und Gas/Bremse. Aktualisiert sich live während der Aufzeichnung (~alle 2 s) und nach dem Stop; über „Sitzungen → In Ansicht laden" auch für alte Aufzeichnungen."))
+        telemetry_layout.addWidget(self._hint("G-Kräfte über der Runde: das G-G-Diagramm zeigt quer vs. längs (Farbe = Geschwindigkeit), darunter die Spuren für G-quer, G-längs, Lenkung und Gas/Bremse. Aktualisiert sich live während der Aufzeichnung (~alle 2 s) und nach dem Stop; über Sitzungen - In Ansicht laden auch für alte Aufzeichnungen."))
         self.telemetry_gg = TelemetryGGWidget()
         telemetry_layout.addWidget(self.telemetry_gg, 1)
         self.telemetry_trace = TelemetryTraceWidget()
