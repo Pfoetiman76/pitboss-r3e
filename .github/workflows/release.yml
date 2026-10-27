@@ -13,9 +13,9 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45  # 0.5.9.19: Netz-Haenger (Download verbindet, liefert aber keine Daten) sonst bis zu 6h Default-Timeout
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
 
@@ -102,7 +102,7 @@ jobs:
           Get-ChildItem installer\Output | ForEach-Object { Write-Host ("{0,10:N2} MB  {1}" -f ($_.Length/1MB), $_.Name) }
 
       - name: Release veroeffentlichen
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: installer/Output/PitBossR3E-Setup-*.exe
           generate_release_notes: true
