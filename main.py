@@ -31,7 +31,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.14 Beta"
+APP_VERSION = "0.2.15 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -107,6 +107,40 @@ def save_sessions_index(idx: dict) -> bool:
         return True
     except Exception:
         return False
+
+def parse_session_report_meta(path) -> dict:
+    """0.2.15: Strecke/Fahrzeug/Runden/Bestzeit aus einem gespeicherten Report
+    lesen. Fuellt aeltere Aufzeichnungen im Sitzungs-Browser nach, die noch
+    keinen Eintrag in sessions.json hatten."""
+    import re as _re
+    try:
+        txt = Path(path).read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return {}
+    meta = {}
+    m = _re.search(r"Track=([^|]+?)\s*\|", txt)
+    if m:
+        meta["track"] = m.group(1).strip()
+    m = _re.search(r"Car=([^|]+?)\s*\|", txt)
+    if m:
+        meta["vehicle"] = m.group(1).strip()
+    lap_rows = _re.findall(r"^\d+ \|\s*(?:REFERENZ|g\u00fcltig|ausgeschlossen)\s*\|", txt, _re.MULTILINE)
+    if lap_rows:
+        meta["runden"] = len(lap_rows)
+    m = _re.search(r"Offizielle Bestzeit aus Scoring: ([\d:.]+)", txt)
+    if m:
+        meta["bestzeit"] = m.group(1).strip()
+    else:
+        times = _re.findall(r"^\d+ \|\s*(?:REFERENZ|g\u00fcltig)\s*\|.*?\|\s*(\d+:\d{2}\.\d{3})\s*\|", txt, _re.MULTILINE)
+        if times:
+            def _tsec(t):
+                try:
+                    mm, ss = t.split(":")
+                    return int(mm) * 60 + float(ss)
+                except Exception:
+                    return 0.0
+            meta["bestzeit"] = min(times, key=_tsec)
+    return meta
 
 # ---------------------------------------------------------------------------
 # 0.2.7: Start-Modus-Auswahl. Beim App-Start kann man sich auf einen Zweck
@@ -8116,10 +8150,17 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         except Exception:
             files = []
         import re as _re
+        changed = False  # 0.2.15: Rueckfuellung aelterer Sitzungen in sessions.json
         for p in files:
             m = meta.get(p.name, {})
             if not isinstance(m, dict):
                 m = {}
+            if not (m.get("track") or m.get("vehicle") or m.get("runden") or m.get("bestzeit")):
+                parsed = parse_session_report_meta(p)
+                if parsed:
+                    m = dict(parsed)
+                    meta[p.name] = m
+                    changed = True
             dm = _re.match(r"r3e_live_recorder_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})", p.name)
             datum = str(m.get("datum", "") or "")
             if (not datum) and dm:
@@ -8140,6 +8181,9 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 it.setTextAlignment(Qt.AlignCenter)
                 it.setData(Qt.UserRole, str(p))
                 self.sessions_table.setItem(row, c, it)
+        if changed:  # 0.2.15: einmalig ausgelesene Metadaten dauerhaft merken
+            idx["meta"] = meta
+            save_sessions_index(idx)
         self.sessions_table.resizeColumnsToContents()
 
     def _selected_session_file(self):
