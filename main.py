@@ -30,7 +30,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.11 Beta"
+APP_VERSION = "0.2.12 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -4513,13 +4513,6 @@ class Main(QMainWindow):
         self.act_auto_switch.triggered.connect(lambda _c=False: self.btn_auto_switch.click())
         _more.addAction("Live-Telemetrie-Log (Debug) ein/aus", self.btn_live_log.click)
         _more.addAction("Hotkeys belegen …", self.open_hotkey_settings)  # 0.2.5
-        _more.addAction("Start-Modus wählen …", lambda: self.select_start_mode(force=True))  # 0.2.7
-        self.act_ui_simple = _more.addAction("Einfache Ansicht (nur Dashboard/Live/Coach)")  # 0.2.10
-        self.act_ui_simple.setCheckable(True)
-        self.act_ui_simple.setChecked(getattr(self, "ui_simple", True))
-        # 0.2.10: Signal erst NACH setChecked verbinden, sonst ueberschreibt der
-        # Start-Zustand beim erstensetChecked die gemerkte Auswahl in ui_layout.json.
-        self.act_ui_simple.toggled.connect(self.toggle_ui_mode)
         _more.addSeparator()
         _more.addAction("Export-Ordner öffnen", self.btn_export.click)
         _more.addAction("Aufzeichnung löschen", self.btn_clear.click)
@@ -4591,7 +4584,7 @@ class Main(QMainWindow):
         dash_tab = QWidget(); dash_layout = QVBoxLayout(dash_tab)
         dash_layout.setContentsMargins(0, 8, 0, 0); dash_layout.setSpacing(12)
         sess = QGroupBox("SITZUNG"); sg = QGridLayout(sess); sg.setHorizontalSpacing(10)
-        sg.addWidget(QLabel("Setup"), 0, 0); sg.addWidget(self.setup_selector, 0, 1)
+        # 0.2.12: Setup-Auswahl aus der Sitzungsleiste entfernt (Widget bleibt intern aktiv)
         # 0.2.8: Fahrerprofil-Auswahl und "Fahrer & Hardware"-Button aus der Sitzungsleiste entfernt.
         sg.setColumnStretch(1, 1)
         dash_layout.addWidget(sess)
@@ -4650,6 +4643,8 @@ class Main(QMainWindow):
         _live_split.addWidget(_live_right, 4)
         live_layout.addLayout(_live_split)
         live_layout.addWidget(self._hint("Live-Übersicht: Runden- und Statusdaten. Overlays über das Menü oben, " + self.hotkey_config.get("overlay", "F10") + " (Monitor) und " + self.hotkey_config.get("tire_overlay", "F6") + " (Reifen)."))
+        self.live_tabs = QTabWidget()  # 0.2.12: Unterteiter unter Live (wie beim Coach)
+        live_layout.addWidget(self.live_tabs, 2)  # 0.2.12: Reifen/Analyse/Runden/Vergleich/Heatmap
         self.tabs.addTab(live_tab, "Live")
 
         tires_tab = QWidget(); tires_layout = QVBoxLayout(tires_tab)
@@ -4661,7 +4656,7 @@ class Main(QMainWindow):
         self.tire_note = QLabel("Noch keine Reifendaten.")
         self.tire_note.setWordWrap(True)
         tires_layout.addWidget(self.tire_note)
-        self.tabs.addTab(tires_tab, "Reifen")
+        self.live_tabs.addTab(tires_tab, "Reifen")
 
         setup_tab = QWidget(); setup_layout = QVBoxLayout(setup_tab)
         setup_layout.addWidget(self._hint("Empfehlungen aus Temperatur-Spread, Druck und Verschleiß. Keine automatische Setup-Änderung."))
@@ -4681,7 +4676,7 @@ class Main(QMainWindow):
         self.segment_table.setHorizontalHeaderLabels(["Sektor", "Meter", "Samples", "Avg Speed", "Min Speed", "Max Brake", "Avg Thr", "Gear häufig", "Hinweis"])
         self.segment_table.setVisible(False)
         analysis_layout.addWidget(self.segment_table)
-        self.tabs.addTab(analysis_tab, "Analyse")
+        self.live_tabs.addTab(analysis_tab, "Analyse")
 
         laps_tab = QWidget(); laps_layout = QVBoxLayout(laps_tab)
         laps_layout.addWidget(self._hint("S1/S2/S3 sind interne Streckendrittel. Grün = bester Wert, Rot = schwächster gültiger Wert."))
@@ -4708,7 +4703,7 @@ class Main(QMainWindow):
         self.laps_table.setMinimumHeight(90)
         self.laps_table.verticalHeader().setDefaultSectionSize(22)
         laps_layout.addWidget(self.laps_table, stretch=0)
-        self.tabs.addTab(laps_tab, "Runden")
+        self.live_tabs.addTab(laps_tab, "Runden")
 
         compare_tab = QWidget(); compare_layout = QVBoxLayout(compare_tab)
         compare_layout.addWidget(self._hint("Positive Delta-Werte bedeuten Zeitverlust gegenüber der Referenzrunde."))
@@ -4732,7 +4727,7 @@ class Main(QMainWindow):
         ])
         self.compare_table.horizontalHeader().setStretchLastSection(True)
         compare_layout.addWidget(self.compare_table)
-        self.tabs.addTab(compare_tab, "Vergleich")
+        self.live_tabs.addTab(compare_tab, "Vergleich")
 
         heatmap_tab = QWidget(); heatmap_layout = QVBoxLayout(heatmap_tab)
         heatmap_layout.addWidget(self._hint("Vergleichsrunde gegen Referenz. Rot/Orange = Verlust, Grün = besser, Kreise = Coach-Zonen."))
@@ -4748,7 +4743,7 @@ class Main(QMainWindow):
         self.heatmap_note = QLabel("Nach Recording-Stopp oder Rundenauswahl wird die Heatmap automatisch aktualisiert.")
         self.heatmap_note.setWordWrap(True)
         heatmap_layout.addWidget(self.heatmap_note)
-        self.tabs.addTab(heatmap_tab, "Heatmap")
+        self.live_tabs.addTab(heatmap_tab, "Heatmap")
 
         coach_tab = QWidget(); coach_layout = QVBoxLayout(coach_tab)
         coach_layout.addWidget(self._hint("Zusammenhängende Kurven-/Bremszonen mit Verlust, Priorität und Fahranweisung."))
@@ -9333,7 +9328,6 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             "Windows-Global-Hotkeys: " + "/".join(sorted(set(self.hotkey_config.values()))) + " werden zusätzlich per Tastatur-Polling erkannt. 4.2.6 entkoppelt App-Shortcut und Polling gegen Doppeltrigger.",
             f"Samples: {len(self.samples)}",
             ("Aufnahmetyp: Kurzaufnahme/Snapshot" if len(self.samples) < 100 else "Aufnahmetyp: Session/Recording"),
-            f"Start-Modus: {self.start_mode_label_current()}",
             ("Ansicht: Einfach (Dashboard/Live/Coach)" if getattr(self, "ui_simple", True) else "Ansicht: Experte (alle Ansichten)"),  # 0.2.10
             f"Recording-Fahrzeug-Lock: {self.sample_vehicle_label(self.recording_signature) if self.recording_signature else 'nicht aktiv/kein Lock'}",
             f"Verworfene Samples wegen Fahrzeug-/Klassenwechsel/ungültig: {self.rejected_sample_count}",
@@ -9465,19 +9459,12 @@ def main():
     except Exception:
         pass
     w = Main(); w.show()
-    # 0.2.7: Start-Modus-Auswahl (gemerkte Auswahl wird direkt angewendet)
-    try:
-        w.select_start_mode()
-    except Exception as e:
-        try:
-            w.log.append(f"Start-Modus-Auswahl fehlgeschlagen: {e}")
-        except Exception:
-            pass
     sys.exit(app.exec())
 
 
 if __name__ == "__main__":
     main()
+
 
 
 
