@@ -31,7 +31,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.22 Beta"
+APP_VERSION = "0.2.23 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -880,7 +880,7 @@ class TelemetryGGWidget(QWidget):
 
 
 class TelemetryTraceWidget(QWidget):
-    """0.2.21: Spuren ueber Rundenmeter: G-quer, G-laengs, Lenkung, Gas/Bremse."""
+    """0.2.23: Spuren ueber Rundenmeter - Lenkung + Gas/Bremse (die zwei wichtigen)."""
 
     def __init__(self):
         super().__init__()
@@ -910,24 +910,27 @@ class TelemetryTraceWidget(QWidget):
         if dmax <= 0:
             dmax = 1.0
         lanes = [
-            ("G-quer", QColor(235, 70, 55), lambda s: max(-1.0, min(1.0, float(getattr(s, "g_force_lat", 0.0) or 0.0) / 2.5))),
-            ("G-laengs", QColor(70, 190, 235), lambda s: max(-1.0, min(1.0, float(getattr(s, "g_force_long", 0.0) or 0.0) / 2.5))),
-            ("Lenkung", QColor(235, 185, 60), lambda s: max(-1.0, min(1.0, float(s.steering)))),
-            ("Gas/Bremse", QColor(90, 215, 120), lambda s: (float(s.throttle) if float(s.throttle) > 0.04 else -float(s.brake))),
+            # 0.2.23: auf die wichtigen zwei Spuren reduziert - Lenkung + Gas/Bremse
+            ("Lenkung", QColor(235, 185, 60), lambda s: max(-1.0, min(1.0, float(s.steering))), None),
+            ("Gas/Bremse", QColor(90, 215, 120), lambda s: (float(s.throttle) if float(s.throttle) > 0.04 else -float(s.brake)),
+             (QColor(90, 215, 120), QColor(235, 70, 60))),  # Gas gruen nach oben, Bremse rot nach unten
         ]
         lane_h = h / float(len(lanes))
-        for i, (label, col, fn) in enumerate(lanes):
+        for i, (label, col, fn, pedal) in enumerate(lanes):
             top = i * lane_h
             mid = top + lane_h / 2.0
             p.setPen(QPen(QColor(70, 70, 80), 1))
             p.drawLine(0, int(mid), w, int(mid))
             p.setPen(QColor(150, 150, 160))
             p.drawText(QRectF(6, top + 2, left - 8, 16), Qt.AlignLeft, label)
-            p.setPen(QPen(col, 2))
             prev = None
             for s in rows:
                 x = left + (float(getattr(s, "lap_dist_m", 0.0) or 0.0) / dmax) * (w - left - 6)
-                y = mid - fn(s) * (lane_h / 2.0 - 6.0)
+                val = fn(s)
+                y = mid - val * (lane_h / 2.0 - 6.0)
+                if pedal is not None:  # Gas = gruen, Bremse = rot
+                    col = pedal[0] if val >= 0 else pedal[1]
+                p.setPen(QPen(col, 2))
                 if prev is not None:
                     if abs(x - prev[0]) > 160:  # Sprung ueber Start/Ziel: Linie unterbrechen
                         prev = None
@@ -4981,7 +4984,7 @@ class Main(QMainWindow):
 
         # 0.2.21: Telemetrie-Reiter - G-G-Diagramm + Spuren (G-Kraefte, Lenkung, Pedale)
         telemetry_tab = QWidget(); telemetry_layout = QVBoxLayout(telemetry_tab)
-        telemetry_layout.addWidget(self._hint("G-Kräfte über der Runde: das G-G-Diagramm zeigt quer vs. längs (Farbe = Geschwindigkeit), darunter die Spuren für G-quer, G-längs, Lenkung und Gas/Bremse. Aktualisiert sich live während der Aufzeichnung (~alle 2 s) und nach dem Stop; über Sitzungen - In Ansicht laden auch für alte Aufzeichnungen."))
+        telemetry_layout.addWidget(self._hint("G-Kräfte über der Runde: das G-G-Diagramm zeigt quer vs. längs (Farbe = Geschwindigkeit). Darunter die zwei wichtigen Spuren: Lenkung und Gas (grün) bzw. Bremse (rot). Aktualisiert sich live (~alle 2 s), nach dem Stop und über Sitzungen - In Ansicht laden."))
         self.telemetry_gg = TelemetryGGWidget()
         telemetry_layout.addWidget(self.telemetry_gg, 1)
         self.telemetry_trace = TelemetryTraceWidget()
