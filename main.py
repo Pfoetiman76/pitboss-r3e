@@ -31,7 +31,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.24 Beta"
+APP_VERSION = "0.2.25 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -826,6 +826,64 @@ class SegmentDelta:
     ref_avg_throttle: float
     throttle_delta: float
     hint: str
+
+
+class TelemetryMapWidget(QWidget):
+    """0.2.25: Input-Streckenkarte im MoTeC-Stil - die gefahrene Linie ist
+    nach Input gefaerbt: gruen = Gas, rot = Bremse, grau = rollen/Teilgas.
+    Zeigt, WO auf der Strecke was am Pedal passiert."""
+
+    def __init__(self):
+        super().__init__()
+        self.rows = []
+        self.setMinimumHeight(220)
+
+    def set_rows(self, rows):
+        self.rows = list(rows or [])
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        p.fillRect(self.rect(), QColor(16, 16, 16))
+        rows = self.rows
+        if len(rows) < 2:
+            p.setPen(QColor(200, 200, 205))
+            p.drawText(self.rect(), Qt.AlignCenter, "Input-Karte erscheint mit aufgezeichneter Fahrt")
+            return
+        w, h = self.width(), self.height()
+        xs = [float(s.pos_x) for s in rows]
+        ys = [float(s.pos_y) for s in rows]
+        minx, maxx = min(xs), max(xs)
+        miny, maxy = min(ys), max(ys)
+        span = max(maxx - minx, maxy - miny, 1.0)
+        pad = 24.0
+        scale = max(min(w, h) - 2 * pad, 40.0)
+
+        def pt(s):
+            x = pad + (float(s.pos_x) - minx) / span * scale + max(0.0, (w - 2 * pad - scale) / 2.0)
+            y = pad + (float(s.pos_y) - miny) / span * scale + max(0.0, (h - 2 * pad - scale) / 2.0)
+            return (x, y)
+
+        prev = None
+        for s in rows:
+            x, y = pt(s)
+            if prev is not None:
+                if abs(x - prev[0]) + abs(y - prev[1]) < 400:  # Sprung Start/Ziel abfangen
+                    if float(s.brake) > 0.08:
+                        col = QColor(220, 60, 50)      # Bremse
+                    elif float(s.throttle) > 0.5:
+                        col = QColor(80, 200, 100)      # Gas
+                    else:
+                        col = QColor(120, 120, 128)    # rollen / Teilgas
+                    p.setPen(QPen(col, 3))
+                    p.drawLine(QPointF(prev[0], prev[1]), QPointF(x, y))
+            prev = (x, y)
+        x0, y0 = pt(rows[0])  # Start/Ziel-Marker
+        p.setPen(QPen(QColor(235, 185, 60), 2))
+        p.drawEllipse(QPointF(x0, y0), 4, 4)
+        p.setPen(QColor(150, 150, 158))
+        p.drawText(QRectF(8, 4, 400, 16), Qt.AlignLeft, "Input-Karte: gruen = Gas, rot = Bremse, grau = rollen")
 
 
 class TelemetryTraceWidget(QWidget):
@@ -4956,16 +5014,23 @@ class Main(QMainWindow):
 
         # 0.2.21: Telemetrie-Reiter - G-G-Diagramm + Spuren (G-Kraefte, Lenkung, Pedale)
         telemetry_tab = QWidget(); telemetry_layout = QVBoxLayout(telemetry_tab)
-        telemetry_layout.addWidget(self._hint("MoTeC-Stil: Gas (grün) und Bremse (rot) von 0 bis 100%, darunter die Lenkung zentriert, jeweils über die Rundenmeter. Aktualisiert sich live (~alle 2 s), nach dem Stop und über Sitzungen - In Ansicht laden."))
+        telemetry_layout.addWidget(self._hint("MoTeC-Stil: Gas (grün) und Bremse (rot) von 0 bis 100%, darunter die Lenkung zentriert, jeweils über die Rundenmeter. Rechts oben wird die Runde gewählt, die Input-Karte zeigt, wo auf der Strecke gas gegeben bzw. gebremst wird."))
+        _tele_btns = QHBoxLayout()
+        _tele_btns.addStretch(1)
+        _tele_btns.addWidget(QLabel("Runde:"))
+        self.telemetry_lap_combo = QComboBox()  # 0.2.25: einzelne Runden auswaehlbar
+        self.telemetry_lap_combo.currentIndexChanged.connect(lambda _i: self.update_telemetry_view())
+        _tele_btns.addWidget(self.telemetry_lap_combo)
+        _b_tele_ref = QPushButton("Aktualisieren"); _b_tele_ref.clicked.connect(self.update_telemetry_view)
+        _tele_btns.addWidget(_b_tele_ref)
+        telemetry_layout.addLayout(_tele_btns)
         self.telemetry_trace = TelemetryTraceWidget()
-        telemetry_layout.addWidget(self.telemetry_trace, 1)
+        telemetry_layout.addWidget(self.telemetry_trace, 3)
+        self.telemetry_map = TelemetryMapWidget()  # 0.2.25: Input-Karte
+        telemetry_layout.addWidget(self.telemetry_map, 2)
         self.telemetry_note = QLabel("")
         self.telemetry_note.setStyleSheet("color: #8f8f99; font-size: 12px;")
         telemetry_layout.addWidget(self.telemetry_note)
-        _tele_btns = QHBoxLayout()
-        _b_tele_ref = QPushButton("Aktualisieren"); _b_tele_ref.clicked.connect(self.update_telemetry_view)
-        _tele_btns.addStretch(1); _tele_btns.addWidget(_b_tele_ref)
-        telemetry_layout.addLayout(_tele_btns)
         self.live_tabs.addTab(telemetry_tab, "Telemetrie")
 
         coach_tab = QWidget(); coach_layout = QVBoxLayout(coach_tab)
@@ -7808,14 +7873,34 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         self.refresh_dashboard()
 
     def update_telemetry_view(self):
-        """0.2.24: Telemetrie-Reiter fuellen - MoTeC-Kanaele Throttle/Brake/Steering."""
+        """0.2.25: Telemetrie-Reiter - gewaehlte Runde, Kanal-Spuren + Input-Karte."""
         if not hasattr(self, "telemetry_trace"):
             return
-        rows = []
-        for s in (self.samples or [])[-4000:]:
-            if float(getattr(s, "lap_dist_m", -1.0) or 0.0) >= 0 and float(s.speed_kmh) > 2.0:
-                rows.append(s)
+        driven = [s for s in (self.samples or []) if float(getattr(s, "lap_dist_m", -1.0) or 0.0) >= 0 and float(s.speed_kmh) > 2.0]
+        # Runden-Auswahl oben rechts: Liste nur bei Aenderung neu fuellen, Auswahl bewahren
+        laps = sorted({int(s.lap_number) for s in driven if int(s.lap_number) > 0})
+        if hasattr(self, "telemetry_lap_combo"):
+            labels = ["Alle Runden"] + ["Runde " + str(n) for n in laps]
+            cur_labels = [self.telemetry_lap_combo.itemText(i) for i in range(self.telemetry_lap_combo.count())]
+            if cur_labels != labels:
+                cur = self.telemetry_lap_combo.currentText()
+                self.telemetry_lap_combo.blockSignals(True)
+                self.telemetry_lap_combo.clear()
+                self.telemetry_lap_combo.addItems(labels)
+                idx = self.telemetry_lap_combo.findText(cur)
+                self.telemetry_lap_combo.setCurrentIndex(idx if idx >= 0 else 0)
+                self.telemetry_lap_combo.blockSignals(False)
+        rows = driven[-4000:]
+        sel = self.telemetry_lap_combo.currentText() if hasattr(self, "telemetry_lap_combo") else "Alle Runden"
+        if sel != "Alle Runden":  # 0.2.25: nur die gewaehlte Runde zeigen
+            try:
+                lapno = int(sel.replace("Runde ", ""))
+                rows = [s for s in driven if int(s.lap_number) == lapno]
+            except Exception:
+                pass
         self.telemetry_trace.set_rows(rows)
+        if hasattr(self, "telemetry_map"):
+            self.telemetry_map.set_rows(rows)
         if rows:
             tmax = 0.0
             bmax = 0.0
@@ -7824,7 +7909,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                     tmax = float(s.throttle)
                 if float(s.brake) > bmax:
                     bmax = float(s.brake)
-            self.telemetry_note.setText("max Gas " + f"{tmax * 100:.0f}" + "% | max Bremse " + f"{bmax * 100:.0f}" + "% | Samples: " + str(len(self.samples or [])))
+            self.telemetry_note.setText(sel + " | max Gas " + f"{tmax * 100:.0f}" + "% | max Bremse " + f"{bmax * 100:.0f}" + "% | Samples: " + str(len(rows)))
         else:
             self.telemetry_note.setText("Noch keine gefahrenen Samples.")
 
