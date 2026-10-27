@@ -31,7 +31,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.23 Beta"
+APP_VERSION = "0.2.24 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -828,64 +828,14 @@ class SegmentDelta:
     hint: str
 
 
-class TelemetryGGWidget(QWidget):
-    """0.2.21: G-G-Diagramm - Quer- vs. Laengs-G-Kraft, Farbe = Geschwindigkeit."""
-
-    def __init__(self):
-        super().__init__()
-        self.points = []  # (g_lat, g_long, speed_kmh)
-        self.setMinimumHeight(300)
-
-    def set_points(self, pts):
-        self.points = list(pts or [])
-        self.update()
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing, True)
-        p.fillRect(self.rect(), QColor(20, 20, 24))
-        w, h = self.width(), self.height()
-        cx, cy = w / 2.0, h / 2.0
-        r = max(min(w, h) / 2.0 - 16.0, 40.0)
-        scale = 2.75  # Rand des Diagramms in g
-        # Raster: 1g/2g-Kreise + Achsen
-        p.setPen(QPen(QColor(80, 80, 90), 1))
-        for g in (1.0, 2.0):
-            p.drawEllipse(QPointF(cx, cy), r * g / scale, r * g / scale)
-        p.setPen(QPen(QColor(95, 95, 105), 1))
-        p.drawLine(int(cx - r - 6), int(cy), int(cx + r + 6), int(cy))
-        p.drawLine(int(cx), int(cy - r - 6), int(cx), int(cy + r + 6))
-        p.setPen(QColor(150, 150, 160))
-        p.drawText(QRectF(8, 6, 260, 18), Qt.AlignLeft, "G-G-Diagramm (quer = rechts/links, oben = Beschleunigung, unten = Bremsen)")
-        for g in (1.0, 2.0):
-            p.drawText(QRectF(cx + r * g / scale + 2, cy - 8, 40, 16), Qt.AlignLeft, str(int(g)) + "g")
-        # Punkte: Farbe = Speed (blau langsam, gruen mittel, rot schnell)
-        vmax = 300.0
-        for pt in self.points:
-            if pt[2] > vmax:
-                vmax = pt[2]
-        for gl, gt, spd in self.points:
-            frac = max(0.0, min(1.0, spd / max(vmax, 60.0)))
-            if frac < 0.33:
-                col = QColor(70, 150, 235)
-            elif frac < 0.66:
-                col = QColor(90, 215, 120)
-            else:
-                col = QColor(235, 70, 60)
-            p.setPen(QPen(col, 1))
-            p.drawPoint(int(cx + (gl / scale) * r), int(cy - (gt / scale) * r))
-        if not self.points:
-            p.setPen(QColor(210, 210, 210))
-            p.drawText(self.rect(), Qt.AlignCenter, "Noch keine G-Kraft-Daten (Aufzeichnung starten)")
-
-
 class TelemetryTraceWidget(QWidget):
-    """0.2.23: Spuren ueber Rundenmeter - Lenkung + Gas/Bremse (die zwei wichtigen)."""
+    """0.2.24: MoTeC-i2-Stil - Kanaele ueber Rundenmeter: Throttle (gruen) und
+    Brake (rot) von 0..100%, darunter Steering zentriert, mit Raster und Achsen."""
 
     def __init__(self):
         super().__init__()
         self.rows = []
-        self.setMinimumHeight(240)
+        self.setMinimumHeight(260)
 
     def set_rows(self, rows):
         self.rows = list(rows or [])
@@ -894,14 +844,14 @@ class TelemetryTraceWidget(QWidget):
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
-        p.fillRect(self.rect(), QColor(20, 20, 24))
+        p.fillRect(self.rect(), QColor(16, 16, 16))
         rows = self.rows
         if len(rows) < 2:
-            p.setPen(QColor(210, 210, 210))
-            p.drawText(self.rect(), Qt.AlignCenter, "Telemetrie-Spuren erscheinen mit aufgezeichneter Fahrt")
+            p.setPen(QColor(200, 200, 205))
+            p.drawText(self.rect(), Qt.AlignCenter, "Pedale und Lenkung erscheinen mit aufgezeichneter Fahrt")
             return
         w, h = self.width(), self.height()
-        left = 78
+        left = 86
         dmax = 1.0
         for s in rows:
             d = float(getattr(s, "lap_dist_m", 0.0) or 0.0)
@@ -909,34 +859,56 @@ class TelemetryTraceWidget(QWidget):
                 dmax = d
         if dmax <= 0:
             dmax = 1.0
-        lanes = [
-            # 0.2.23: auf die wichtigen zwei Spuren reduziert - Lenkung + Gas/Bremse
-            ("Lenkung", QColor(235, 185, 60), lambda s: max(-1.0, min(1.0, float(s.steering))), None),
-            ("Gas/Bremse", QColor(90, 215, 120), lambda s: (float(s.throttle) if float(s.throttle) > 0.04 else -float(s.brake)),
-             (QColor(90, 215, 120), QColor(235, 70, 60))),  # Gas gruen nach oben, Bremse rot nach unten
-        ]
-        lane_h = h / float(len(lanes))
-        for i, (label, col, fn, pedal) in enumerate(lanes):
-            top = i * lane_h
-            mid = top + lane_h / 2.0
-            p.setPen(QPen(QColor(70, 70, 80), 1))
-            p.drawLine(0, int(mid), w, int(mid))
-            p.setPen(QColor(150, 150, 160))
-            p.drawText(QRectF(6, top + 2, left - 8, 16), Qt.AlignLeft, label)
+        plot_w = w - left - 8
+
+        def px(s):
+            return left + (float(getattr(s, "lap_dist_m", 0.0) or 0.0) / dmax) * plot_w
+
+        lane_h = h / 2.0
+        pedal_top, pedal_h = 20, lane_h - 26  # 0..100%
+        steer_mid = lane_h + lane_h / 2.0  # zentriert +-1
+        steer_amp = lane_h / 2.0 - 20.0
+        # Raster wie MoTeC: vertikal alle 10% Distanz, horizontal Viertel
+        p.setPen(QPen(QColor(56, 56, 60), 1))
+        for k in range(1, 10):
+            x = left + plot_w * k / 10.0
+            p.drawLine(int(x), 20, int(x), h - 2)
+        for k in range(1, 4):
+            y = pedal_top + pedal_h * k / 4.0
+            p.drawLine(left, int(y), w - 8, int(y))
+        p.setPen(QPen(QColor(90, 90, 96), 1))
+        p.drawLine(left, int(steer_mid), w - 8, int(steer_mid))
+        p.setPen(QPen(QColor(90, 90, 96), 2))
+        p.drawLine(left, int(pedal_top + pedal_h), w - 8, int(pedal_top + pedal_h))  # Nulllinie Pedale
+        # Achsen-Labels (MoTeC-Stil: links)
+        p.setPen(QColor(150, 150, 158))
+        p.drawText(QRectF(4, pedal_top - 2, left - 10, 14), Qt.AlignRight, "100%")
+        p.drawText(QRectF(4, pedal_top + pedal_h - 12, left - 10, 14), Qt.AlignRight, "0%")
+        p.drawText(QRectF(4, steer_mid - 8, left - 10, 14), Qt.AlignRight, "0")
+        p.drawText(QRectF(left, 2, 260, 16), Qt.AlignLeft, "Throttle / Brake")
+        p.drawText(QRectF(left, lane_h, 260, 16), Qt.AlignLeft, "Steering")
+        # Kurven: Throttle gruen, Brake rot (beide 0..100% nach oben)
+        for col, f in (
+            (QColor(80, 200, 100), lambda s: float(s.throttle)),
+            (QColor(220, 60, 50), lambda s: float(s.brake)),
+        ):
+            p.setPen(QPen(col, 2))
             prev = None
             for s in rows:
-                x = left + (float(getattr(s, "lap_dist_m", 0.0) or 0.0) / dmax) * (w - left - 6)
-                val = fn(s)
-                y = mid - val * (lane_h / 2.0 - 6.0)
-                if pedal is not None:  # Gas = gruen, Bremse = rot
-                    col = pedal[0] if val >= 0 else pedal[1]
-                p.setPen(QPen(col, 2))
-                if prev is not None:
-                    if abs(x - prev[0]) > 160:  # Sprung ueber Start/Ziel: Linie unterbrechen
-                        prev = None
-                        continue
+                x = px(s)
+                y = pedal_top + pedal_h * (1.0 - max(0.0, min(1.0, f(s))))
+                if prev is not None and abs(x - prev[0]) <= 160:  # Sprung ueber Start/Ziel: unterbrechen
                     p.drawLine(QPointF(prev[0], prev[1]), QPointF(x, y))
                 prev = (x, y)
+        # Lenkung zentriert
+        p.setPen(QPen(QColor(235, 185, 60), 2))
+        prev = None
+        for s in rows:
+            x = px(s)
+            y = steer_mid - max(-1.0, min(1.0, float(s.steering))) * steer_amp
+            if prev is not None and abs(x - prev[0]) <= 160:
+                p.drawLine(QPointF(prev[0], prev[1]), QPointF(x, y))
+            prev = (x, y)
 
 
 class TrackMapWidget(QWidget):
@@ -4984,9 +4956,7 @@ class Main(QMainWindow):
 
         # 0.2.21: Telemetrie-Reiter - G-G-Diagramm + Spuren (G-Kraefte, Lenkung, Pedale)
         telemetry_tab = QWidget(); telemetry_layout = QVBoxLayout(telemetry_tab)
-        telemetry_layout.addWidget(self._hint("G-Kräfte über der Runde: das G-G-Diagramm zeigt quer vs. längs (Farbe = Geschwindigkeit). Darunter die zwei wichtigen Spuren: Lenkung und Gas (grün) bzw. Bremse (rot). Aktualisiert sich live (~alle 2 s), nach dem Stop und über Sitzungen - In Ansicht laden."))
-        self.telemetry_gg = TelemetryGGWidget()
-        telemetry_layout.addWidget(self.telemetry_gg, 1)
+        telemetry_layout.addWidget(self._hint("MoTeC-Stil: Gas (grün) und Bremse (rot) von 0 bis 100%, darunter die Lenkung zentriert, jeweils über die Rundenmeter. Aktualisiert sich live (~alle 2 s), nach dem Stop und über Sitzungen - In Ansicht laden."))
         self.telemetry_trace = TelemetryTraceWidget()
         telemetry_layout.addWidget(self.telemetry_trace, 1)
         self.telemetry_note = QLabel("")
@@ -6565,7 +6535,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 self.trackmap.set_sector_info(self.official_sector_bounds())  # 0.2.9
             # 0.2.21: Telemetrie-Reiter live aktualisieren (~alle 2 s)
             self._tele_tick = getattr(self, "_tele_tick", 0) + 1
-            if self._tele_tick % 20 == 0 and hasattr(self, "telemetry_gg"):
+            if self._tele_tick % 20 == 0 and hasattr(self, "telemetry_trace"):
                 try:
                     self.update_telemetry_view()
                 except Exception:
@@ -7838,32 +7808,23 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         self.refresh_dashboard()
 
     def update_telemetry_view(self):
-        """0.2.21: Telemetrie-Reiter fuellen - G-G-Punkte + Spuren + Peak-Notiz."""
-        if not (hasattr(self, "telemetry_gg") and hasattr(self, "telemetry_trace")):
+        """0.2.24: Telemetrie-Reiter fuellen - MoTeC-Kanaele Throttle/Brake/Steering."""
+        if not hasattr(self, "telemetry_trace"):
             return
-        pts = []
-        for s in (self.samples or [])[-5000:]:
-            gl = float(getattr(s, "g_force_lat", 0.0) or 0.0)
-            gt = float(getattr(s, "g_force_long", 0.0) or 0.0)
-            if abs(gl) > 0.05 or abs(gt) > 0.05:
-                pts.append((gl, gt, float(s.speed_kmh)))
-        self.telemetry_gg.set_points(pts)
         rows = []
         for s in (self.samples or [])[-4000:]:
             if float(getattr(s, "lap_dist_m", -1.0) or 0.0) >= 0 and float(s.speed_kmh) > 2.0:
                 rows.append(s)
         self.telemetry_trace.set_rows(rows)
         if rows:
-            gmax = 0.0
-            gmin = 0.0
+            tmax = 0.0
+            bmax = 0.0
             for s in rows:
-                gl = abs(float(getattr(s, "g_force_lat", 0.0) or 0.0))
-                gt = float(getattr(s, "g_force_long", 0.0) or 0.0)
-                if gl > gmax:
-                    gmax = gl
-                if gt < gmin:
-                    gmin = gt
-            self.telemetry_note.setText("Peak quer " + f"{gmax:.2f}" + " g | max Längsverzögerung " + f"{gmin:.2f}" + " g | Samples: " + str(len(self.samples or [])))
+                if float(s.throttle) > tmax:
+                    tmax = float(s.throttle)
+                if float(s.brake) > bmax:
+                    bmax = float(s.brake)
+            self.telemetry_note.setText("max Gas " + f"{tmax * 100:.0f}" + "% | max Bremse " + f"{bmax * 100:.0f}" + "% | Samples: " + str(len(self.samples or [])))
         else:
             self.telemetry_note.setText("Noch keine gefahrenen Samples.")
 
