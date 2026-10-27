@@ -30,7 +30,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.12 Beta"
+APP_VERSION = "0.2.13 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -80,6 +80,29 @@ def save_ui_layout(simple: bool) -> bool:
     try:
         EXPORT_DIR.mkdir(parents=True, exist_ok=True)
         UI_LAYOUT_PATH.write_text(json.dumps({"simple": bool(simple)}, indent=2), encoding="utf-8")
+        return True
+    except Exception:
+        return False
+
+# 0.2.13: Sitzungs-Index - Metadaten (Strecke/Fahrzeug/Runden/Bestzeit) und
+# eigene Namen fuer gespeicherte Reports. Die Report-Dateien bleiben unangetastet.
+SESSIONS_INDEX_PATH = EXPORT_DIR / "sessions.json"
+
+def load_sessions_index() -> dict:
+    """0.2.13: {"names": {...}, "meta": {...}} laden; ungueltig -> leere Struktur."""
+    try:
+        raw = json.loads(SESSIONS_INDEX_PATH.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            return raw
+    except Exception:
+        pass
+    return {"names": {}, "meta": {}}
+
+def save_sessions_index(idx: dict) -> bool:
+    """0.2.13: Sitzungs-Index in Dokumente\\PitBoss R3E\\sessions.json speichern."""
+    try:
+        EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        SESSIONS_INDEX_PATH.write_text(json.dumps(idx, indent=2), encoding="utf-8")
         return True
     except Exception:
         return False
@@ -4745,6 +4768,25 @@ class Main(QMainWindow):
         heatmap_layout.addWidget(self.heatmap_note)
         self.live_tabs.addTab(heatmap_tab, "Heatmap")
 
+        # 0.2.13: Sitzungs-Browser - gespeicherte Reports mit Datum/Name/Strecke/Fahrzeug/Runden/Bestzeit
+        sessions_tab = QWidget(); sessions_layout = QVBoxLayout(sessions_tab)
+        sessions_layout.addWidget(self._hint("Gespeicherte Aufzeichnungen. Doppelklick oder Button = Report anzeigen, Umbenennen vergibt einen eigenen Namen. Neue Sitzungen erscheinen automatisch nach dem Speichern."))
+        self.sessions_table = QTableWidget(0, 6)
+        self.sessions_table.setHorizontalHeaderLabels(["Datum", "Name", "Strecke", "Fahrzeug", "Runden", "Bestzeit"])
+        self.sessions_table.horizontalHeader().setStretchLastSection(True)
+        self.sessions_table.setAlternatingRowColors(True)
+        self.sessions_table.verticalHeader().setDefaultSectionSize(26)
+        self.sessions_table.setEditTriggers(0)  # QAbstractItemView.NoEditTriggers
+        self.sessions_table.doubleClicked.connect(lambda _i: self.open_session_report())
+        sessions_layout.addWidget(self.sessions_table, 1)
+        _sess_btns = QHBoxLayout()
+        _b_sess_show = QPushButton("Report anzeigen"); _b_sess_show.clicked.connect(self.open_session_report)
+        _b_sess_ren = QPushButton("Umbenennen"); _b_sess_ren.clicked.connect(self.rename_session)
+        _b_sess_ref = QPushButton("Aktualisieren"); _b_sess_ref.clicked.connect(self.refresh_sessions_table)
+        _sess_btns.addWidget(_b_sess_show); _sess_btns.addWidget(_b_sess_ren); _sess_btns.addStretch(1); _sess_btns.addWidget(_b_sess_ref)
+        sessions_layout.addLayout(_sess_btns)
+        self.live_tabs.addTab(sessions_tab, "Sitzungen")
+
         coach_tab = QWidget(); coach_layout = QVBoxLayout(coach_tab)
         coach_layout.addWidget(self._hint("Zusammenhängende Kurven-/Bremszonen mit Verlust, Priorität und Fahranweisung."))
         self.coach_text = QTextEdit(); self.coach_text.setReadOnly(True); self.coach_text.setStyleSheet("font-size:15px; line-height:1.35;")
@@ -4864,6 +4906,7 @@ class Main(QMainWindow):
         self.ui_simple = load_ui_layout()
         self.apply_ui_mode()
         self.show_view("Dashboard")
+        self.refresh_sessions_table()  # 0.2.13
         self.view_timer = QTimer(self)  # 0.2.0: 2 Hz, nur sichtbare Ansicht
         self.view_timer.setInterval(500)
         self.view_timer.timeout.connect(self._view_tick)
@@ -8008,6 +8051,131 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                     item.setText("Lap %d BEST" % lap.lap_number)
                 self.live_lap_table.setItem(row, c, item)
         self.live_lap_table.resizeColumnsToContents()
+
+    def _remember_session(self, path):
+        """0.2.13: gespeicherten Report in den Sitzungs-Index uebernehmen
+        (Strecke/Fahrzeug/Runden/Bestzeit fuer den Sitzungs-Browser)."""
+        try:
+            idx = load_sessions_index()
+            meta = idx.setdefault("meta", {}) if isinstance(idx, dict) else {}
+            last = self.samples[-1] if self.samples else None
+            laps = [l for l in (getattr(self, "lap_summaries", None) or [])]
+            clean = [l for l in laps if l.is_clean and l.is_complete]
+            best = ""
+            if clean:
+                best = fmt_lap_time(min(self.estimated_lap_time_from_speed(l.lap_number) for l in clean))
+            veh = ""
+            if self.recording_signature:
+                veh = self.sample_vehicle_label(self.recording_signature)
+            if (not veh) and last is not None:
+                veh = str(getattr(last, "vehicle_name", "") or "")
+            meta[str(Path(path).name)] = {
+                "datum": datetime.now().strftime("%d.%m.%Y %H:%M"),
+                "track": (str(getattr(last, "track", "") or "") if last is not None else ""),
+                "vehicle": str(veh or ""),
+                "runden": len(laps),
+                "bestzeit": str(best),
+            }
+            save_sessions_index(idx)
+        except Exception:
+            pass
+
+    def refresh_sessions_table(self):
+        """0.2.13: gespeicherte Reports im Sitzungs-Browser listen."""
+        if not hasattr(self, "sessions_table"):
+            return
+        self.sessions_table.setRowCount(0)
+        idx = load_sessions_index()
+        names = idx.get("names", {}) if isinstance(idx, dict) else {}
+        meta = idx.get("meta", {}) if isinstance(idx, dict) else {}
+        try:
+            files = sorted(REPORT_DIR.glob("*.txt"), key=lambda p: p.stat().st_mtime, reverse=True)
+        except Exception:
+            files = []
+        import re as _re
+        for p in files:
+            m = meta.get(p.name, {})
+            if not isinstance(m, dict):
+                m = {}
+            dm = _re.match(r"r3e_live_recorder_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})", p.name)
+            datum = str(m.get("datum", "") or "")
+            if (not datum) and dm:
+                datum = dm.group(3) + "." + dm.group(2) + "." + dm.group(1) + " " + dm.group(4) + ":" + dm.group(5)
+            if not datum:
+                datum = "\u2014"
+            vals = [
+                datum,
+                str(names.get(p.name, "") or ""),
+                str(m.get("track", "") or ""),
+                str(m.get("vehicle", "") or ""),
+                (str(m.get("runden", "")) if m.get("runden", "") != "" else ""),
+                str(m.get("bestzeit", "") or ""),
+            ]
+            row = self.sessions_table.rowCount(); self.sessions_table.insertRow(row)
+            for c, v in enumerate(vals):
+                it = QTableWidgetItem(str(v))
+                it.setTextAlignment(Qt.AlignCenter)
+                it.setData(Qt.UserRole, str(p))
+                self.sessions_table.setItem(row, c, it)
+        self.sessions_table.resizeColumnsToContents()
+
+    def _selected_session_file(self):
+        if not hasattr(self, "sessions_table"):
+            return None
+        r = self.sessions_table.currentRow()
+        if r < 0:
+            return None
+        it = self.sessions_table.item(r, 0)
+        if it is None:
+            return None
+        p = it.data(Qt.UserRole)
+        return Path(p) if p else None
+
+    def open_session_report(self):
+        """0.2.13: gespeicherten Report in einem Fenster anzeigen (Doppelklick)."""
+        p = self._selected_session_file()
+        if p is None or not p.is_file():
+            self.status.setText("Sitzungen: keine Zeile markiert.")
+            return
+        try:
+            txt = p.read_text(encoding="utf-8", errors="replace")
+        except Exception as e:
+            QMessageBox.warning(self, "Sitzungen", "Report konnte nicht gelesen werden: " + str(e))
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Sitzung: " + p.stem)
+        dlg.resize(860, 640)
+        lay = QVBoxLayout(dlg)
+        view = QTextEdit(); view.setReadOnly(True)
+        view.setPlainText(txt)
+        lay.addWidget(view, 1)
+        btns = QDialogButtonBox(QDialogButtonBox.Close)
+        btns.rejected.connect(dlg.reject)
+        lay.addWidget(btns)
+        dlg.show()
+
+    def rename_session(self):
+        """0.2.13: eigenen Namen fuer eine Aufzeichnung (sessions.json, Datei unangetastet)."""
+        p = self._selected_session_file()
+        if p is None:
+            self.status.setText("Sitzungen: keine Zeile markiert.")
+            return
+        idx = load_sessions_index()
+        names = idx.setdefault("names", {}) if isinstance(idx, dict) else {}
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Sitzung umbenennen")
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel("Eigener Name f\u00fcr diese Aufzeichnung:"))
+        edit = QLineEdit(str(names.get(p.name, p.stem) or ""))
+        lay.addWidget(edit)
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        lay.addWidget(btns)
+        if dlg.exec() == QDialog.Accepted:
+            names[p.name] = edit.text().strip()
+            save_sessions_index(idx)
+            self.refresh_sessions_table()
         self.laps_table.setRowCount(0)
         for lap in self.lap_summaries:
             row = self.laps_table.rowCount(); self.laps_table.insertRow(row)
@@ -8706,6 +8874,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             ok = path.exists() and path.stat().st_size > 50
             if ok:
                 self.log.append(f"Report gespeichert: {path.resolve()}")
+                self._remember_session(path)  # 0.2.13
             else:
                 self.last_report_save_error = "Datei wurde nicht oder leer geschrieben"
                 self.log.append(f"Report speichern unplausibel leer: {path.resolve()}")
@@ -9464,6 +9633,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
