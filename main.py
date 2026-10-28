@@ -31,7 +31,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.29 Beta"
+APP_VERSION = "0.2.30 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -8036,8 +8036,8 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         self.update_telemetry_view()  # 0.2.21
         self.update_coach_text()
         self.update_input_coach()
-        self.autosave_exports()
-        self.status.setText("Recording gestoppt. Auto-Report/CSV gespeichert. Referenzen liegen separat in exports/references.")
+        res_save = self.autosave_exports()  # 0.2.30: Ergebnis wird gleich ausgewertet
+        self.autosave_feedback(res_save)
         self.refresh_dashboard()
 
     def clear(self):
@@ -9392,20 +9392,98 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             return False
 
     def autosave_exports(self):
+        """0.2.30: liefert ein Ergebnis-Dict zurueck, damit der Stopp
+        Klartext-Feedback geben kann (Statusleiste + Dialog mit Ordner-
+        Oeffnen). Vorher stand 'gespeichert' in der Statusleiste, selbst
+        wenn nichts geschrieben wurde - Marcel fand keinen Report."""
+        result = {
+            "skipped": None, "report_ok": False, "csv_ok": False,
+            "report_path": None, "csv_path": None,
+            "report_error": "", "csv_error": "",
+            "samples": len(self.samples),
+            "rejected": getattr(self, "rejected_sample_count", 0),
+        }
         REPORT_DIR.mkdir(parents=True, exist_ok=True)
         CSV_DIR.mkdir(parents=True, exist_ok=True)
         if not self.samples:
-            self.log.append("Auto-Report/CSV übersprungen: keine Samples vorhanden.")
-            return
+            result["skipped"] = "keine Samples vorhanden"
+            self.log.append(
+                "Auto-Report/CSV übersprungen: keine Samples vorhanden "
+                f"(verworfen wegen Fahrzeug-/Streckenwechsel oder Garage/Pit: {result['rejected']}). "
+                "Moegliche Ursachen: Aufzeichnung gestartet, ohne danach zu fahren; "
+                "Recording-Lock auf ein anderes Fahrzeug; oder RaceRoom lieferte keine Daten."
+            )
+            return result
         stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         rp = REPORT_DIR / f"r3e_live_recorder_{stamp}.txt"
         cp = CSV_DIR / f"r3e_live_recorder_samples_{stamp}.csv"
-        report_ok = self.safe_save_report_to_path(rp)
-        csv_ok = self.safe_save_csv_to_path(cp)
-        if report_ok and csv_ok:
+        result["report_ok"] = self.safe_save_report_to_path(rp)
+        result["csv_ok"] = self.safe_save_csv_to_path(cp)
+        result["report_path"] = str(rp.resolve())
+        result["csv_path"] = str(cp.resolve())
+        result["report_error"] = getattr(self, "last_report_save_error", "")
+        result["csv_error"] = getattr(self, "last_csv_save_error", "")
+        if result["report_ok"] and result["csv_ok"]:
             self.log.append(f"Auto-Save OK: Report + CSV gespeichert in {EXPORT_DIR.resolve()}")
         else:
-            self.log.append(f"Auto-Save FEHLER: Report_ok={report_ok}, CSV_ok={csv_ok}. Bitte Logpfad prüfen: {EXPORT_DIR.resolve()}")
+            self.log.append(f"Auto-Save FEHLER: Report_ok={result['report_ok']}, CSV_ok={result['csv_ok']}. Bitte Logpfad prüfen: {EXPORT_DIR.resolve()}")
+        return result
+
+    def autosave_feedback(self, res: dict):
+        """0.2.30: Klartext nach dem Stopp - Statusleiste UND Dialog mit
+        'Ordner oeffnen'. Nur bei echtem Dialog-Start (nicht beim App-Schliessen)."""
+        try:
+            if not res:
+                return
+            if res.get("skipped"):
+                self.status.setText(
+                    f"Kein Report gespeichert: {res['skipped']} "
+                    f"(Samples: {res['samples']}, verworfen: {res['rejected']}). Details im Log."
+                )
+                msg = (
+                    "Es wurde KEIN Report gespeichert.\n\n"
+                    f"Grund: {res['skipped']}\n"
+                    f"Gesammelte Samples: {res['samples']}\n"
+                    f"Verworfene Samples (Fahrzeugwechsel/Garage/Pit): {res['rejected']}\n\n"
+                    "Haeufigste Ursachen:\n"
+                    "- Aufzeichnung gestartet, aber danach nicht gefahren\n"
+                    "- Aufzeichnung laenger laufen lassen, nachdem RaceRoom/Session beendet wurde\n"
+                    "- Recording-Lock auf ein anderes Fahrzeug als das gefahrene"
+                )
+            elif res.get("report_ok") and res.get("csv_ok"):
+                self.status.setText(f"Report gespeichert: {res['report_path']}")
+                msg = (
+                    "Report + CSV wurden gespeichert:\n\n"
+                    f"Report: {res['report_path']}\n"
+                    f"CSV: {res['csv_path']}\n\n"
+                    f"Samples: {res['samples']}"
+                )
+            else:
+                rerr = res.get("report_error") or "unbekannter Fehler"
+                cerr = res.get("csv_error") or "unbekannter Fehler"
+                self.status.setText(f"Auto-Save FEHLER (Report/CSV). Details im Log.")
+                msg = (
+                    "Beim Speichern ist ein Fehler aufgetreten:\n\n"
+                    f"Report: {'OK - ' + str(res.get('report_path')) if res.get('report_ok') else 'FEHLER - ' + rerr}\n"
+                    f"CSV: {'OK - ' + str(res.get('csv_path')) if res.get('csv_ok') else 'FEHLER - ' + cerr}\n\n"
+                    f"Ziel-Ordner: {REPORT_DIR.resolve()}"
+                )
+            if getattr(self, "_app_closing", False):
+                return  # 0.2.29: beim App-Schliessen keinen Dialog blockieren
+            box = QMessageBox(self)
+            box.setWindowTitle("Aufzeichnung gestoppt")
+            box.setText(msg)
+            btn_open = box.addButton("Ordner öffnen", QMessageBox.ActionRole)
+            box.addButton("OK", QMessageBox.AcceptRole)
+            box.exec()
+            if box.clickedButton() is btn_open:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(REPORT_DIR.resolve())))
+        except Exception as e:
+            try:
+                self.log.append(f"Auto-Save-Feedback fehlgeschlagen: {type(e).__name__}: {e}")
+            except Exception:
+                pass
+
 
     def tire_grip_hint(self, avg_temp: float, wear_pct: float, pressure_kpa: float, spread: float) -> str:
         # 4.3: berechnete Schätzung. RaceRoom liefert hier keinen direkten Grip-%-Wert.
@@ -10138,6 +10216,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         # (Report + CSV + Referenz). Vorher geschah hier nichts: PitBoss mit
         # aktiver Aufnahme zugemacht = alle Samples verloren, kein Report.
         try:
+            self._app_closing = True  # 0.2.30: Feedback-Dialog beim Schliessen unterdruecken
             if getattr(self, "recording", False):
                 self.log.append("App wird geschlossen - laufende Aufnahme wird automatisch gestoppt und gespeichert.")
                 self.stop_recording()
