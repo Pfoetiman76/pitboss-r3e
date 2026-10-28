@@ -31,7 +31,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.28 Beta"
+APP_VERSION = "0.2.29 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -10133,6 +10133,19 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             QMessageBox.warning(self, "CSV speichern", f"CSV konnte nicht gespeichert werden. Siehe Log. Ziel: {default}")
 
     def closeEvent(self, event):  # 0.5.9.26: Live-Log beim Beenden sauber schliessen
+        # 0.2.29: Laeuft noch eine Aufzeichnung, sie VOR dem eigentlichen
+        # Schliessen stoppen - stop_recording() macht den kompletten Auto-Save
+        # (Report + CSV + Referenz). Vorher geschah hier nichts: PitBoss mit
+        # aktiver Aufnahme zugemacht = alle Samples verloren, kein Report.
+        try:
+            if getattr(self, "recording", False):
+                self.log.append("App wird geschlossen - laufende Aufnahme wird automatisch gestoppt und gespeichert.")
+                self.stop_recording()
+        except Exception as e:
+            try:
+                self.log.append(f"Auto-Save beim Schliessen fehlgeschlagen: {type(e).__name__}: {e}")
+            except Exception:
+                pass
         if getattr(self, "live_log_enabled", False):
             self.stop_live_log()
         # 0.2.19: Alle Overlay-Fenster schliessen. Die Overlays sind rahmenlose
