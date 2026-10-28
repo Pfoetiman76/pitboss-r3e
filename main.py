@@ -31,7 +31,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.27 Beta"
+APP_VERSION = "0.2.28 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -864,17 +864,18 @@ class TelemetryMapWidget(QWidget):
             return
         w, h = self.width(), self.height()
         base = self.outline if len(self.outline) >= 2 else rows
+        # 0.2.28: gleiche Achsen wie die Heatmap-Karte - pos_x/pos_z, z nach oben gespiegelt
         xs = [float(s.pos_x) for s in base]
-        ys = [float(s.pos_y) for s in base]
+        zs = [float(s.pos_z) for s in base]
         minx, maxx = min(xs), max(xs)
-        miny, maxy = min(ys), max(ys)
-        span = max(maxx - minx, maxy - miny, 1.0)
+        minz, maxz = min(zs), max(zs)
+        span = max(maxx - minx, maxz - minz, 1.0)
         pad = 24.0
         scale = max(min(w, h) - 2 * pad, 40.0)
 
         def pt(s):
             x = pad + (float(s.pos_x) - minx) / span * scale + max(0.0, (w - 2 * pad - scale) / 2.0)
-            y = pad + (float(s.pos_y) - miny) / span * scale + max(0.0, (h - 2 * pad - scale) / 2.0)
+            y = pad + (maxz - float(s.pos_z)) / span * scale + max(0.0, (h - 2 * pad - scale) / 2.0)
             return (x, y)
 
         # 0.2.26: Strecken-Umriss zuerst (duenn, grau), damit die Karte lesbar bleibt
