@@ -2967,6 +2967,23 @@ class TireMiniWidget(OverlayStyleMixin, QWidget):
         self.updateGeometry()
         self.update()
 
+    def wheelEvent(self, event):
+        # 0.2.44: Mausrad ueber EINEM Reifen soll das GESAMTE Overlay skalieren
+        # (nicht den einzelnen Reifen-Baustein, der seit 0.2.42 die Mixin-Logik erbt).
+        pw = self.window()
+        if pw is not self and hasattr(pw, "wheelEvent"):
+            pw.wheelEvent(event)
+            return
+        super().wheelEvent(event)
+
+    def contextMenuEvent(self, event):
+        # 0.2.44: Rechtsklick ueber einem Reifen oeffnet das Menue des Overlays.
+        pw = self.window()
+        if pw is not self and hasattr(pw, "contextMenuEvent"):
+            pw.contextMenuEvent(event)
+            return
+        super().contextMenuEvent(event)
+
     def set_data(self, pressure, out_t, mid_t, in_t, carcass, wear, grip_score=0,
                  flat_status="OK", wear_trend=0.0, warn_enabled=True, wear_zones=None):
         self.pressure_kpa = pressure or 0.0
