@@ -31,7 +31,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.36 Beta"
+APP_VERSION = "0.2.37 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -363,10 +363,12 @@ HOTKEY_ACTIONS = [
     ("overlay", "Coach-Overlay"),
     ("live_coach", "Live-Coach"),
     ("brake_coach", "Kurven-Coach"),
+    ("corner_overlay", "Kurven-Namen-Overlay"),
 ]
 DEFAULT_HOTKEYS = {
     "tire_overlay": "F6", "auto_bestlap": "F7", "record": "F8", "snapshot": "F9",
     "overlay": "F10", "live_coach": "F11", "brake_coach": "F12",
+    "corner_overlay": "F5",
 }
 HOTKEY_ACTION_KEYS = [a for a, _label in HOTKEY_ACTIONS]
 SUPPORTED_HOTKEY_KEYS = [f"F{i}" for i in range(1, 25)] + [str(d) for d in range(10)]
@@ -2448,6 +2450,180 @@ class DamageOverlayWindow(OverlayStyleMixin, QWidget):
         p.drawText(QRectF(10, h - 15, w - 20, 12), Qt.AlignLeft, "Quelle: RaceRoom \u00b7 " + m.diagnostics())
         p.end()
 
+
+# ---------------------------------------------------------------------------
+# 0.2.37: Kurvennamen-Overlay. RaceRoom liefert keine Kurvennamen ueber das
+# Shared Memory, deshalb erkennt PitBoss die Kurven selbst aus einer gefahrenen
+# Runde (heading_deg pro Streckenmeter) und nummeriert sie in Fahrtrichtung
+# (K1, K2, ...). Eigene Namen pro Strecke landen in corner_names.json und sind
+# im Dialog "Kurven benennen ..." pflegbar.
+# ---------------------------------------------------------------------------
+CORNER_NAMES_PATH = EXPORT_DIR / "corner_names.json"  # 0.2.37
+
+
+def load_corner_names() -> dict:
+    """0.2.37: {"Strecke": {"1": "Name", ...}} laden; ungueltig -> leeres Dict."""
+    try:
+        raw = json.loads(CORNER_NAMES_PATH.read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_corner_names(data: dict) -> bool:
+    """0.2.37: Kurvennamen in Dokumente\\PitBoss R3E\\corner_names.json speichern."""
+    try:
+        EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        CORNER_NAMES_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        return True
+    except Exception:
+        return False
+
+
+def detect_corners_from_rows(rows, min_total_deg=25.0, bin_m=10.0, diff_span_bins=3):
+    """0.2.37: Kurven aus einer abgeschlossenen Runde erkennen.
+
+    heading_deg wird pro 10-m-Bin vektoriell gemittelt (sicher gegen den
+    0/360-Umbruch). Eine Kurve ist ein Bereich, in dem sich die Richtung
+    ueber 30 m deutlich aendert; gezaehlt wird die Gesamtdrehung des
+    Bereichs (>= min_total_deg). Rueckgabe: in Fahrtrichtung sortierte Liste
+    [{"idx", "dir" ("L"/"R"), "turn_deg", "lap_dist_m"}].
+    """
+    pts = []
+    for r in rows:
+        d = float(getattr(r, "lap_dist_m", -1.0) or 0.0)
+        h = float(getattr(r, "heading_deg", 0.0) or 0.0)
+        v = float(getattr(r, "speed_kmh", 0.0) or 0.0)
+        if d >= 0 and v >= 5.0:
+            pts.append((d, h))
+    if len(pts) < 60:
+        return []
+    pts.sort(key=lambda p: p[0])
+    bins = {}
+    for d, h in pts:
+        k = int(d // bin_m)
+        b = bins.setdefault(k, [0.0, 0.0, 0])
+        rad = math.radians(h)
+        b[0] += math.cos(rad)
+        b[1] += math.sin(rad)
+        b[2] += 1
+    keys = sorted(bins)
+
+    def heading_of(k):
+        b = bins[k]
+        return math.degrees(math.atan2(b[1], b[0])) % 360.0
+
+    def hdelta(k1, k2):
+        return ((heading_of(k2) - heading_of(k1) + 180.0) % 360.0) - 180.0
+
+    n = len(keys)
+    strength = {}
+    for i in range(n):
+        j = min(i + diff_span_bins, n - 1)
+        strength[keys[i]] = abs(hdelta(keys[i], keys[j]))
+    corners = []
+    in_corner = False
+    start_i = 0
+
+    def _close(end_i):
+        total = hdelta(keys[start_i], keys[end_i])
+        if abs(total) >= min_total_deg:
+            apex_i = start_i + max(range(end_i - start_i + 1),
+                                    key=lambda o: strength[keys[start_i + o]])
+            corners.append({
+                "dir": "L" if total > 0 else "R",
+                "turn_deg": round(abs(total), 1),
+                "lap_dist_m": round(keys[apex_i] * bin_m, 1),
+            })
+
+    for i in range(n):
+        s = strength[keys[i]]
+        if not in_corner and s >= 7.0:
+            in_corner = True
+            start_i = i
+        elif in_corner and s < 4.0:
+            _close(i - 1)
+            in_corner = False
+    if in_corner:
+        _close(n - 1)
+    corners.sort(key=lambda c: c["lap_dist_m"])
+    for i, c in enumerate(corners, 1):
+        c["idx"] = i
+    return corners
+
+
+class CornerNameOverlayWindow(OverlayStyleMixin, QWidget):
+    """0.2.37: kleines Overlay mit der naechsten Kurve: Name, Richtungspfeil
+    und Distanz in Metern. Basis: automatisch erkannte Kurven der Strecke
+    plus eigene Namen aus corner_names.json ('Kurven benennen ...')."""
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint | Qt.WindowDoesNotAcceptFocus)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.resize(250, 96)
+        self._track = ""
+        self._name = "-"
+        self._dir = ""
+        self._dist_m = None
+        self._drag = None
+
+    def set_info(self, track, name, dir_, dist_m):
+        self._track = track or ""
+        self._name = name or "-"
+        self._dir = dir_ or ""
+        self._dist_m = dist_m
+        self.update()
+
+    def mousePressEvent(self, e):
+        try:
+            gp = e.globalPosition().toPoint()
+            self._drag = (gp, self.pos())
+        except Exception:
+            self._drag = None
+
+    def mouseMoveEvent(self, e):
+        if self._drag:
+            gp = e.globalPosition().toPoint()
+            self.move(self._drag[1].x() + gp.x() - self._drag[0].x(),
+                      self._drag[1].y() + gp.y() - self._drag[0].y())
+
+    def mouseReleaseEvent(self, e):
+        self._drag = None
+
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        self._paint_frame(p, self.width(), self.height())
+        p.setRenderHint(QPainter.Antialiasing, True)
+        p.setPen(QPen(self._muted()))
+        f = QFont()
+        f.setPointSize(8)
+        f.setBold(True)
+        p.setFont(f)
+        head = "NAECHSTE KURVE" + ((" - " + self._track) if self._track else "")
+        p.drawText(QRectF(12, 8, self.width() - 24, 16), Qt.AlignLeft, head)
+        fg = self._fg()
+        f2 = QFont()
+        f2.setPointSize(15 if len(self._name) <= 14 else 11)
+        f2.setBold(True)
+        p.setFont(f2)
+        p.setPen(QPen(fg))
+        arrow = "L" if self._dir == "L" else ("R" if self._dir == "R" else "")
+        label = ((arrow + "  ") if arrow else "") + self._name
+        p.drawText(QRectF(12, 26, self.width() - 24, 34), Qt.AlignLeft, label)
+        f3 = QFont()
+        f3.setPointSize(10)
+        p.setFont(f3)
+        if self._dist_m is None:
+            p.setPen(QPen(self._muted()))
+            p.drawText(QRectF(12, 60, self.width() - 24, 22), Qt.AlignLeft,
+                       "keine Kurvendaten - erst eine Runde fahren")
+        else:
+            p.setPen(QPen(QColor("#e8212b")))
+            p.drawText(QRectF(12, 60, self.width() - 24, 22), Qt.AlignLeft,
+                       "in " + str(int(round(self._dist_m))) + " m")
+        p.end()
 
 class OverlayWindow(OverlayStyleMixin, QWidget):
     """Schlankes Always-on-top Monitor/Coach-Overlay im HUD-Stil.
@@ -4721,6 +4897,10 @@ class Main(QMainWindow):
         self.recording_signature = None
         self.rejected_sample_count = 0
         self.overlay_window = None
+        self.corner_name_overlay_window = None  # 0.2.37
+        self.corner_list = []  # 0.2.37: erkannte Kurven der aktuellen Strecke
+        self.corner_track = ""  # 0.2.37
+        self.corner_track_len = 0.0  # 0.2.37
         self.tire_overlay_window = None
         self.pedal_overlay_window = None  # 0.4.7.1
         self.limit_overlay_window = None  # 0.4.8.7
@@ -4934,6 +5114,8 @@ class Main(QMainWindow):
         self.act_include_invalid.setChecked(bool(self.include_invalid_laps))
         self.act_include_invalid.toggled.connect(self.toggle_include_invalid_laps)
         _more.addAction("Hotkeys belegen …", self.open_hotkey_settings)  # 0.2.5
+        _more.addAction("Kurven-Namen-Overlay ein/aus", self.toggle_corner_name_overlay)  # 0.2.37
+        _more.addAction("Kurven benennen …", self.open_corner_name_dialog)  # 0.2.37
         _more.addSeparator()
         _more.addAction("Beta-Feedback senden (Bug/Wunsch) …", self.open_beta_feedback)  # 0.2.33
         _more.addSeparator()
@@ -6102,6 +6284,140 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             self.tire_overlay_window.raise_()
             self.log.append("Reifen-Overlay geöffnet. Separates Fenster neben dem Coach-Overlay.")
 
+    def toggle_corner_name_overlay(self):
+        # 0.2.37: Kurvennamen-Overlay (Mehr-Menue oder Hotkey 'Kurven-Namen-Overlay').
+        if self.corner_name_overlay_window is None:
+            self.corner_name_overlay_window = CornerNameOverlayWindow()
+            try:
+                self.corner_name_overlay_window.apply_overlay_style(getattr(self, "overlay_style", "transparent"))
+            except Exception:
+                pass
+        if self.corner_name_overlay_window.isVisible():
+            self.corner_name_overlay_window.hide()
+            self.log.append("Kurven-Namen-Overlay ausgeblendet.")
+        else:
+            self.update_corner_name_overlay(force=True)
+            self.corner_name_overlay_window.show()
+            self.corner_name_overlay_window.raise_()
+            self.log.append("Kurven-Namen-Overlay geoeffnet. Naechste Kurve mit Name und Distanz.")
+
+    def open_corner_name_dialog(self):
+        # 0.2.37: erkannte Kurven benennen; Namen landen je Strecke in corner_names.json.
+        corners = getattr(self, "corner_list", None) or []
+        if not corners:
+            QMessageBox.information(self, "Kurven benennen",
+                "Es sind noch keine Kurven erkannt.\n\n"
+                "Fahre erst eine vollstaendige Runde auf der Strecke - PitBoss erkennt "
+                "die Kurven automatisch am Ende der Runde.")
+            return
+        track = getattr(self, "corner_track", "") or self._corner_track_key()
+        data = load_corner_names()
+        names = dict(data.get(track, {}))
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Kurven benennen - " + (track or "Strecke"))
+        dlg.setMinimumWidth(520)
+        lay = QVBoxLayout(dlg)
+        tip = QLabel("Eigene Namen fuer die erkannten Kurven (leer lassen = K1, K2, ...). Reihenfolge = Fahrtrichtung.")
+        tip.setWordWrap(True)
+        lay.addWidget(tip)
+        table = QTableWidget(len(corners), 3)
+        table.setHorizontalHeaderLabels(["Nr", "Richtung", "Name"])
+        table.horizontalHeader().setStretchLastSection(True)
+        table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
+        for i, c in enumerate(corners):
+            it0 = QTableWidgetItem("K" + str(c.get("idx", i + 1)))
+            it0.setFlags(Qt.ItemIsEnabled)
+            direction = "links" if c.get("dir") == "L" else "rechts"
+            it1 = QTableWidgetItem(direction + " (" + str(int(round(float(c.get("turn_deg", 0.0))))) + " Grad)")
+            it1.setFlags(Qt.ItemIsEnabled)
+            table.setItem(i, 0, it0)
+            table.setItem(i, 1, it1)
+            table.setItem(i, 2, QTableWidgetItem(str(names.get(str(c.get("idx")), "") or "")))
+        lay.addWidget(table)
+        btns = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        lay.addWidget(btns)
+        if dlg.exec() == QDialog.Accepted:
+            for i, c in enumerate(corners):
+                it = table.item(i, 2)
+                v = (it.text().strip() if it else "")
+                if v:
+                    names[str(c.get("idx"))] = v
+                else:
+                    names.pop(str(c.get("idx")), None)
+            data[track] = names
+            if save_corner_names(data):
+                self.log.append("Kurvennamen gespeichert (" + track + ") fuer " + str(len(names)) + " Kurve(n).")
+                self.status.setText("Kurvennamen gespeichert.")
+                self.update_corner_name_overlay(force=True)
+
+    def _corner_track_key(self) -> str:
+        s = self.last_live_sample or (self.samples[-1] if self.samples else None)
+        return (getattr(s, "track", "") or "").strip()
+
+    def _corner_display_name(self, corner) -> str:
+        names = load_corner_names().get(getattr(self, "corner_track", ""), {})
+        v = str(names.get(str(corner.get("idx")), "") or "").strip()
+        return v if v else ("K" + str(corner.get("idx", "?")))
+
+    def refresh_corner_list(self, rows):
+        """0.2.37: nach einer abgeschlossenen Runde Kurven erkennen und pro Strecke cachen."""
+        try:
+            corners = detect_corners_from_rows(rows)
+            if not corners:
+                return
+            key = self._corner_track_key()
+            if not key:
+                return
+            self.corner_list = corners
+            self.corner_track = key
+            track_m = max([float(getattr(r, "lap_dist_m", 0.0) or 0.0) for r in rows] or [0.0])
+            self.corner_track_len = track_m if track_m > 100.0 else 0.0
+            self.log.append("Kurven erkannt (" + key + "): " + str(len(corners)) +
+                            " - benennbar ueber Mehr > Kurven benennen ...")
+            self.update_corner_name_overlay()
+        except Exception as e:
+            try:
+                self.log.append("Kurven-Erkennung fehlgeschlagen: " + type(e).__name__ + ": " + str(e))
+            except Exception:
+                pass
+
+    def update_corner_name_overlay(self, force=False):
+        # 0.2.37: naechste Kurve (Name, Richtung, Distanz) ins Overlay schreiben.
+        w = getattr(self, "corner_name_overlay_window", None)
+        if w is None or not (w.isVisible() or force):
+            return
+        corners = getattr(self, "corner_list", None) or []
+        track = self._corner_track_key()
+        if not corners or track != getattr(self, "corner_track", ""):
+            w.set_info(track, "-", "", None)
+            return
+        s = self.last_live_sample
+        if s is None:
+            w.set_info(track, "-", "", None)
+            return
+        cur = float(getattr(s, "lap_dist_m", -1.0) or 0.0)
+        if cur < 0:
+            w.set_info(track, "-", "", None)
+            return
+        tl = float(getattr(s, "track_length_m", 0.0) or 0.0)
+        if tl <= 0:
+            tl = float(getattr(self, "corner_track_len", 0.0) or 0.0)
+        best, best_d = None, None
+        for c in corners:
+            d = float(c.get("lap_dist_m", 0.0)) - cur
+            if d < -30.0 and tl > 100.0:
+                d += tl  # Kurve liegt hinter uns -> naechste Runde
+            if d < 15.0:
+                continue  # mitten in der Kurve -> die uebernaechste suchen
+            if best is None or d < best_d:
+                best, best_d = c, d
+        if best is None:
+            w.set_info(track, "-", "", None)
+            return
+        w.set_info(track, self._corner_display_name(best), best.get("dir", ""), best_d)
+
     def toggle_recording(self):
         if self.recording:
             self.stop_recording()
@@ -6584,7 +6900,8 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                   "fuel_overlay_window", "ffb_overlay_window", "pit_overlay_window",
                   "delta_overlay_window", "laptime_overlay_window", "damage_overlay_window",
                   "flag_overlay_window", "lapgraph_overlay_window", "overtake_overlay_window",
-                  "blindspot_overlay_window"):
+                  "blindspot_overlay_window",
+                  "corner_name_overlay_window"):
             w = getattr(self, a, None)
             if w is not None:
                 out.append(w)
@@ -7001,7 +7318,8 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         # 0.2.5: Die Tasten kommen aus der frei belegbaren Konfiguration (hotkeys.json).
         for _attr in ("shortcut_tire_overlay", "shortcut_auto_bestlap", "shortcut_record",
                       "shortcut_snapshot", "shortcut_overlay", "shortcut_live_coach",
-                      "shortcut_brake_coach"):
+                      "shortcut_brake_coach",
+                      "shortcut_corner_overlay"):
             _old = getattr(self, _attr, None)
             if _old is not None:
                 try:
@@ -7027,6 +7345,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             ("shortcut_overlay", "overlay", self.toggle_overlay_hotkey),
             ("shortcut_live_coach", "live_coach", self.toggle_live_coach_hotkey),
             ("shortcut_brake_coach", "brake_coach", self.toggle_brake_coach_hotkey),
+            ("shortcut_corner_overlay", "corner_overlay", self.toggle_corner_name_overlay),
         ]
         for attr, action, handler in bindings:
             sc = QShortcut(QKeySequence(self.hotkey_config.get(action, DEFAULT_HOTKEYS[action])), self)
@@ -7136,6 +7455,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             "overlay": self.toggle_overlay_hotkey,
             "live_coach": self.toggle_live_coach_hotkey,
             "brake_coach": self.toggle_brake_coach_hotkey,
+            "corner_overlay": self.toggle_corner_name_overlay,
         }
         for action, key in self.hotkey_config.items():
             vk = hotkey_vk(key)
@@ -7755,6 +8075,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         self.write_live_log_row(s)  # 0.5.9.26
         self.maybe_autoshow_tire_overlay(s)
         self.update_live_lap_buffer(s)
+        self.update_corner_name_overlay()  # 0.2.37: Kurven-Namen-Overlay live aktualisieren
         # 0.2.0: Live-Delta baut Segmente aus der laufenden Runde - ca. 3 Hz reichen voellig.
         self._delta_tick = getattr(self, "_delta_tick", 0) + 1
         if self._delta_tick % 3 == 0:
@@ -7824,6 +8145,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 completed = list(self.live_lap_samples)
                 self.consider_live_completed_lap_as_reference(completed, self.live_lap_number)
                 self.maybe_export_live_bestlap(completed, self.live_lap_number)
+                self.refresh_corner_list(completed)  # 0.2.37: Kurven der Strecke erkennen
                 self.live_coach.on_lap_completed(completed, self.live_lap_number,
                                                  self.live_delta_s, self.live_coach_line)
                 try:
