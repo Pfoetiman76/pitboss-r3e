@@ -31,7 +31,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.31 Beta"
+APP_VERSION = "0.2.32 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -144,7 +144,7 @@ def parse_session_report_meta(path) -> dict:
     m = _re.search(r"Car=([^|]+?)\s*\|", txt)
     if m:
         meta["vehicle"] = m.group(1).strip()
-    lap_rows = _re.findall(r"^\d+ \|\s*(?:REFERENZ|g\u00fcltig|ausgeschlossen)\s*\|", txt, _re.MULTILINE)
+    lap_rows = _re.findall(r"^\d+ \|\s*(?:REFERENZ|g\u00fcltig|ausgeschlossen|ung\u00fcltig \(einbezogen\))\s*\|", txt, _re.MULTILINE)
     if lap_rows:
         meta["runden"] = len(lap_rows)
     m = _re.search(r"Offizielle Bestzeit aus Scoring: ([\d:.]+)", txt)
@@ -9952,7 +9952,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             lines.append("Referenzrunde: keine gültige komplette Runde erkannt")
         lines.append("Lap | Status | Grund | Samples | Coverage m | Dauer [m]:ss.000 | Max Speed | Avg Speed | Max Brake | Fuel Used")
         for l in self.lap_summaries:
-            status = "REFERENZ" if self.reference_lap and l.lap_number == self.reference_lap.lap_number else ("gültig" if l.is_clean else "ausgeschlossen")
+            status = "REFERENZ" if self.reference_lap and l.lap_number == self.reference_lap.lap_number else ("gültig" if l.is_clean else ("ungültig (einbezogen)" if self.include_invalid_laps else "ausgeschlossen"))
             # 0.2.5: Unvollständige Runden zeigen keine Zeit mehr. Die offizielle Scoring-Zeit
             # (lap_time_previous_self) wird erst auf der Folgerunde gelesen und gehört dann zur
             # Vorrunde - für eine nicht komplette Runde ist sie irreführend (Lap 9 zeigte Lap 8).
