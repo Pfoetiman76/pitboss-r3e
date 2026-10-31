@@ -32,7 +32,7 @@ from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.40 Beta"
+APP_VERSION = "0.2.41 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -5054,6 +5054,7 @@ class Main(QMainWindow):
         self.act_blindspot_flip.toggled.connect(self.set_blindspot_flip)
         _ov.addAction("Bremstemperaturen (inkl. Verschleiß-Schätzung)", self.toggle_brake_overlay)
         _ov.addAction("Kraftstoff", self.toggle_fuel_overlay)
+        _ov.addAction("Kurven-Namen", self.toggle_corner_name_overlay)  # 0.2.41: ins Overlays-Menue verschoben (war unter Mehr)
         _ov.addAction("Force Feedback", self.toggle_ffb_overlay)
         _ov.addAction("Limit-Meter", self.toggle_limit_overlay)
         _ov.addSeparator()
@@ -5116,8 +5117,7 @@ class Main(QMainWindow):
         self.act_include_invalid.setChecked(bool(self.include_invalid_laps))
         self.act_include_invalid.toggled.connect(self.toggle_include_invalid_laps)
         _more.addAction("Hotkeys belegen …", self.open_hotkey_settings)  # 0.2.5
-        _more.addAction("Kurven-Namen-Overlay ein/aus", self.toggle_corner_name_overlay)  # 0.2.37
-        _more.addAction("Kurven benennen …", self.open_corner_name_dialog)  # 0.2.37
+        _more.addAction("Kurven benennen …", self.open_corner_name_dialog)  # 0.2.37; Overlay-Umschalter seit 0.2.41 im Overlays-Menue
         _more.addSeparator()
         _more.addAction("Beta-Feedback senden (Bug/Wunsch) …", self.open_beta_feedback)  # 0.2.33
         _more.addSeparator()
