@@ -31,7 +31,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.32 Beta"
+APP_VERSION = "0.2.33 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -62,6 +62,7 @@ HOTKEY_CONFIG_PATH = EXPORT_DIR / "hotkeys.json"  # 0.2.5: frei belegbare Hotkey
 START_MODE_PATH = EXPORT_DIR / "start_mode.json"  # 0.2.7: gemerkter Start-Modus
 UI_LAYOUT_PATH = EXPORT_DIR / "ui_layout.json"  # 0.2.10: Einfache Ansicht vs. Experte
 ANALYSIS_CONFIG_PATH = EXPORT_DIR / "analysis_config.json"  # 0.2.31: Auswertungs-Optionen
+FEEDBACK_DIR = EXPORT_DIR / "feedback"  # 0.2.33: Beta-Tester-Feedback (offline gespeicherte Dateien)
 
 def load_analysis_config() -> dict:
     """0.2.31: {"include_invalid_laps": bool} laden; ungueltig -> Standard."""
@@ -243,6 +244,122 @@ def start_mode_label(mode):
         if mid == mode:
             return label
     return "Alles"
+
+
+class BetaFeedbackDialog(QDialog):
+    """0.2.33: Beta-Tester-Formular fuer Bugs und Aenderungswuensche.
+
+    Empfohlener Weg: 'In GitHub oeffnen' - oeffnet im Browser einen
+    vor-ausgefuellten Issue (Titel + Beschreibung + Version + optionaler
+    Log-Auszug). Der Tester braucht nur einen GitHub-Account im Browser,
+    nichts in der App selbst.
+
+    Offline-Alternative: 'Kopieren & speichern' -legt den Text in die
+    Zwischenablage und als Datei unter Dokumente\\PitBoss R3E\\feedback\\ ab,
+    der Ordner oeffnet sich direkt zum Weitergeben (Mail/Discord).
+    """
+
+    CATEGORIES = (
+        "Bug / Fehler",
+        "Änderungswunsch",
+        "Frage / Unklarheit",
+    )
+
+    def __init__(self, main, parent=None):
+        super().__init__(parent or main)
+        self.main = main
+        self.setWindowTitle("Beta-Feedback: Bug oder Änderungswunsch")
+        self.setMinimumWidth(560)
+        lay = QVBoxLayout(self)
+
+        lay.addWidget(QLabel("Kategorie:"))
+        self.combo_cat = QComboBox()
+        self.combo_cat.addItems(list(self.CATEGORIES))
+        lay.addWidget(self.combo_cat)
+
+        lay.addWidget(QLabel("Kurzer Titel (wird die Issue-Überschrift):"))
+        self.edit_title = QLineEdit()
+        self.edit_title.setPlaceholderText("z. B. 'Report wird nicht gespeichert' oder 'Wunsch: Tastenkürzel für X'")
+        lay.addWidget(self.edit_title)
+
+        lay.addWidget(QLabel("Beschreibung – was ist passiert, was hast du erwartet, wie kann man es nachstellen?"))
+        self.edit_desc = QTextEdit()
+        self.edit_desc.setPlaceholderText("Je mehr Details (Strecke, Fahrzeug, was du gerade getan hast), desto leichter lässt es sich fixen.")
+        lay.addWidget(self.edit_desc)
+
+        self.chk_log = QCheckBox("Version + Log-Auszug (letzte 30 Zeilen) automatisch anhängen")
+        self.chk_log.setChecked(True)
+        lay.addWidget(self.chk_log)
+
+        hint = QLabel("Empfohlen: 'In GitHub öffnen' – es öffnet sich ein vor-ausgefülltes Issue im Browser, du musst nur noch 'Submit' klicken. Alternativ 'Kopieren & speichern' für eine Feedback-Datei.")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+
+        self.btn_github = QPushButton("In GitHub öffnen (empfohlen)")
+        self.btn_github.clicked.connect(self._open_github)
+        self.btn_copy = QPushButton("Kopieren & als Datei speichern (offline)")
+        self.btn_copy.clicked.connect(self._copy_and_save)
+        self.btn_close = QPushButton("Schließen")
+        self.btn_close.clicked.connect(self.reject)
+        bb = QHBoxLayout()
+        bb.addWidget(self.btn_github)
+        bb.addWidget(self.btn_copy)
+        bb.addStretch(1)
+        bb.addWidget(self.btn_close)
+        lay.addLayout(bb)
+
+    def feedback_text(self):
+        from urllib.parse import quote as _quote  # noqa: F401 (siehe _open_github)
+        cat = self.combo_cat.currentText()
+        title = self.edit_title.text().strip()
+        desc = self.edit_desc.toPlainText().strip()
+        lines = [
+            f"**Kategorie:** {cat}",
+            f"**PitBoss R3E Version:** {APP_VERSION}",
+        ]
+        try:
+            if getattr(self.main, "recording_signature", None):
+                lines.append(f"**Zuletzt gefahren:** {self.main.sample_vehicle_label(self.main.recording_signature)}")
+        except Exception:
+            pass
+        lines += ["", "**Beschreibung:**", desc or "(keine Beschreibung eingegeben)", ""]
+        if self.chk_log.isChecked():
+            try:
+                log_txt = self.main.log.toPlainText().strip().splitlines()
+                tail = "\n".join(log_txt[-30:]) if log_txt else "(Log leer)"
+            except Exception:
+                tail = "(Log nicht verfügbar)"
+            lines += ["**Log-Auszug (letzte 30 Zeilen):**", "```", tail, "```", ""]
+        return title, "\n".join(lines)
+
+    def _open_github(self):
+        from urllib.parse import quote as _quote
+        title, body = self.feedback_text()
+        if not title:
+            QMessageBox.information(self, "Beta-Feedback", "Bitte vorher einen kurzen Titel eingeben.")
+            return
+        url = ("https://github.com/Pfoetiman76/pitboss-r3e/issues/new"
+               "?title=" + _quote(title) + "&body=" + _quote(body) + "&labels=beta-feedback")
+        QDesktopServices.openUrl(QUrl(url))
+        self.main.log.append("Beta-Feedback: GitHub-Issue im Browser geöffnet (Kategorie: " + self.combo_cat.currentText() + ").")
+
+    def _copy_and_save(self):
+        from urllib.parse import quote as _quote  # noqa: F401
+        title, body = self.feedback_text()
+        try:
+            QApplication.clipboard().setText(body)
+        except Exception:
+            pass
+        try:
+            FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            path = FEEDBACK_DIR / f"feedback_{stamp}.txt"
+            path.write_text(body, encoding="utf-8")
+            self.main.log.append(f"Beta-Feedback gespeichert (auch in der Zwischenablage): {path.resolve()}")
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(FEEDBACK_DIR.resolve())))
+            QMessageBox.information(self, "Beta-Feedback", "Feedback-Datei gespeichert und Text in die Zwischenablage kopiert.\n\nDatei liegt in:\n" + str(FEEDBACK_DIR.resolve()))
+        except Exception as e:
+            QMessageBox.warning(self, "Beta-Feedback", f"Speichern fehlgeschlagen ({type(e).__name__}: {e}).\nDer Text liegt aber in der Zwischenablage.")
 
 
 class StartModeDialog(QDialog):
@@ -4872,6 +4989,8 @@ class Main(QMainWindow):
         self.act_include_invalid.toggled.connect(self.toggle_include_invalid_laps)
         _more.addAction("Hotkeys belegen …", self.open_hotkey_settings)  # 0.2.5
         _more.addSeparator()
+        _more.addAction("Beta-Feedback senden (Bug/Wunsch) …", self.open_beta_feedback)  # 0.2.33
+        _more.addSeparator()
         _more.addAction("Export-Ordner öffnen", self.btn_export.click)
         _more.addAction("Aufzeichnung löschen", self.btn_clear.click)
         self.btn_more.setMenu(_more)
@@ -7083,6 +7202,12 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 if handler is not None:
                     handler()
             self.global_hotkey_state[key] = down
+
+    def open_beta_feedback(self):
+        """0.2.33: Beta-Tester-Formular fuer Bugs und Aenderungswuensche.
+        GitHub-Issue im Browser (empfohlen) oder offline als Datei."""
+        dlg = BetaFeedbackDialog(self)
+        dlg.exec()
 
     def open_hotkey_settings(self):
         """0.2.5: Frei belegbare Hotkey-Liste fuer Stream Deck/Tastatur.
