@@ -32,7 +32,7 @@ from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.38 Beta"
+APP_VERSION = "0.2.39 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -7092,7 +7092,12 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         elif connected:
             state, text = "on", "\u25cf  RACEROOM VERBUNDEN"
         else:
-            state, text = "off", "WARTET AUF RACEROOM"
+            # 0.2.39: Fehlergrund auf der Kopfleiste mitzeigen (kurz, einordnend)
+            _err = getattr(self, "_live_err", None)
+            _hint = " \u2013 " + _err if _err else ""
+            if len(_hint) > 60:
+                _hint = _hint[:57] + "..."
+            state, text = "off", "WARTET AUF RACEROOM" + _hint
         pill = self.conn_pill
         if pill.property("state") != state:
             pill.setProperty("state", state)
@@ -7143,7 +7148,13 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         _lw = getattr(self.reader, "layout_warning", "") if last else ""
         ok_ts = getattr(self, "_last_read_ok_ts", 0.0)
         connected = bool(last) and ((time.monotonic() - ok_ts) < 2.5 if ok_ts else bool(self.samples))
-        self.set_dash_card("Verbindung", ("RaceRoom verbunden" + (" \u2013 API-Hinweis: " + _lw if _lw else "")) if connected else "Wartet auf RaceRoom")
+        if connected:
+            _conn = "RaceRoom verbunden" + (" \u2013 API-Hinweis: " + _lw if _lw else "")
+        else:
+            # 0.2.39: konkreter Fehlergrund statt nur "Wartet auf RaceRoom"
+            _err = getattr(self, "_live_err", None)
+            _conn = "Wartet auf RaceRoom" + (" \u2013 " + _err if _err else "")
+        self.set_dash_card("Verbindung", _conn)
         self.set_dash_card("Recording", "\U0001f534 L\u00c4UFT" if self.recording else "gestoppt")
         clean = [l for l in self.lap_summaries if l.is_clean]
         self.set_dash_card("Runden", f"{len(clean)} g\u00fcltig / {len(self.lap_summaries)} erkannt" if self.lap_summaries else "noch keine Analyse")
@@ -8085,15 +8096,33 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         """
         try:
             s = self.reader.read_sample()
-        except Exception:
+        except Exception as e:
             # 0.2.0: Backoff. Laeuft RaceRoom nicht, reicht 1 Hz statt 10 Hz.
             self._live_fail = getattr(self, "_live_fail", 0) + 1
+            # 0.2.39: Verbindungsdiagnose. Der Fehlergrund (z. B. "Shared Memory
+            # nicht gefunden" oder "keine aktiven Fahrzeuge") wird sichtbar:
+            # bei jedem neuen Grund sofort, danach hoechstens alle 60 s im Log;
+            # die Kachel "Verbindung", die Statusleiste und der Stopp-Dialog
+            # zeigen ihn ebenfalls (self._live_err).
+            _err = str(e)
+            _now = time.monotonic()
+            if _err != getattr(self, "_live_err", None):
+                self._live_err = _err
+                self._live_err_ts = _now
+                self.log.append(f"RaceRoom-Verbindung FEHLER: {_err}")
+            elif _now - getattr(self, "_live_err_ts", 0.0) >= 60.0:
+                self._live_err_ts = _now
+                self.log.append(f"RaceRoom-Verbindung weiterhin FEHLER: {_err}")
             if self._live_fail >= 5 and self.live_timer.interval() != 1000:
                 self.live_timer.setInterval(1000)
             return
         if getattr(self, "_live_fail", 0) or self.live_timer.interval() != 100:
             self._live_fail = 0
             self.live_timer.setInterval(100)
+        if getattr(self, "_live_err", None):
+            self.log.append(f"RaceRoom-Verbindung OK (zuvor: {self._live_err})")
+            self._live_err = None
+            self._live_err_ts = 0.0
         self._last_read_ok_ts = time.monotonic()
         self.last_live_sample = s
         try:
@@ -9830,11 +9859,13 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         CSV_DIR.mkdir(parents=True, exist_ok=True)
         if not self.samples:
             result["skipped"] = "keine Samples vorhanden"
+            # 0.2.39: letzten Verbindungsfehler mit in die Diagnose aufnehmen
+            _verr = getattr(self, "_live_err", None) or "kein Fehler protokolliert (Spiel lief evtl. erst nach dem Stopp?)"
+            result["conn_error"] = _verr
             self.log.append(
                 "Auto-Report/CSV übersprungen: keine Samples vorhanden "
                 f"(verworfen wegen Fahrzeug-/Streckenwechsel oder Garage/Pit: {result['rejected']}). "
-                "Moegliche Ursachen: Aufzeichnung gestartet, ohne danach zu fahren; "
-                "Recording-Lock auf ein anderes Fahrzeug; oder RaceRoom lieferte keine Daten."
+                f"Letzter Verbindungsfehler: {_verr}"
             )
             return result
         stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -9871,7 +9902,9 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                     "Haeufigste Ursachen:\n"
                     "- Aufzeichnung gestartet, aber danach nicht gefahren\n"
                     "- Aufzeichnung laenger laufen lassen, nachdem RaceRoom/Session beendet wurde\n"
-                    "- Recording-Lock auf ein anderes Fahrzeug als das gefahrene"
+                    "- Recording-Lock auf ein anderes Fahrzeug als das gefahrene\n\n"
+                    "Letzter Verbindungsfehler von RaceRoom:\n"
+                    f"{res.get('conn_error') or 'keiner protokolliert'}"
                 )
             elif res.get("report_ok") and res.get("csv_ok"):
                 self.status.setText(f"Report gespeichert: {res['report_path']}")
