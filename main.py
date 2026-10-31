@@ -32,7 +32,7 @@ from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.41 Beta"
+APP_VERSION = "0.2.42 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -1539,6 +1539,25 @@ def _remember_overlay_size(widget):
         _OVERLAY_SIZES = _load_overlay_sizes()
     try:
         _OVERLAY_SIZES[type(widget).__name__] = [int(widget.width()), int(widget.height())]
+        # 0.2.42: Skalierung + Deckkraft pro Overlay mit merken
+        _OVERLAY_SIZES[type(widget).__name__ + ":scale"] = round(float(getattr(widget, "ov_scale", 1.0)), 3)
+        _OVERLAY_SIZES[type(widget).__name__ + ":opacity"] = round(float(getattr(widget, "ov_opacity", 1.0)), 3)
+        import json
+        EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        with open(OVERLAY_SIZES_PATH, "w", encoding="utf-8") as f:
+            json.dump(_OVERLAY_SIZES, f, indent=2)
+    except Exception:
+        pass
+
+
+def _remember_overlay_state(widget):
+    """0.2.42: Deckkraft/Skalierung sofort speichern (auch ohne resize)."""
+    global _OVERLAY_SIZES
+    try:
+        if _OVERLAY_SIZES is None:
+            _OVERLAY_SIZES = _load_overlay_sizes()
+        _OVERLAY_SIZES[type(widget).__name__ + ":scale"] = round(float(getattr(widget, "ov_scale", 1.0)), 3)
+        _OVERLAY_SIZES[type(widget).__name__ + ":opacity"] = round(float(getattr(widget, "ov_opacity", 1.0)), 3)
         import json
         EXPORT_DIR.mkdir(parents=True, exist_ok=True)
         with open(OVERLAY_SIZES_PATH, "w", encoding="utf-8") as f:
@@ -1560,6 +1579,25 @@ def _restore_overlay_size(widget):
             w = max(int(wh[0]), widget.minimumWidth())
             h = max(int(wh[1]), widget.minimumHeight())
             widget.resize(w, h)
+        # 0.2.42: gemerkte Skalierung/Deckkraft wiederherstellen (Reihenfolge:
+        # erst Groesse, dann ov_scale - die gemerkte Groesse enthaelt bereits den Faktor)
+        try:
+            sc = _OVERLAY_SIZES.get(type(widget).__name__ + ":scale")
+            sc = max(0.5, min(2.5, float(sc))) if sc else 1.0
+        except Exception:
+            sc = 1.0
+        widget.ov_scale = sc
+        if sc != 1.0:
+            widget._ov_base_size = (max(10.0, widget.width() / sc), max(10.0, widget.height() / sc))
+        op = _OVERLAY_SIZES.get(type(widget).__name__ + ":opacity")
+        try:
+            widget.ov_opacity = max(0.15, min(1.0, float(op))) if op else 1.0
+        except Exception:
+            widget.ov_opacity = 1.0
+        try:
+            widget.setWindowOpacity(widget.ov_opacity)
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -1664,8 +1702,8 @@ class OverlayStyleMixin:
         if st == "transparent":
             from PySide6.QtGui import QLinearGradient
             g = QLinearGradient(0, 0, w, 0)
-            g.setColorAt(0.0, QColor(6, 6, 8, 200))
-            g.setColorAt(1.0, QColor(6, 6, 8, 135))
+            g.setColorAt(0.0, QColor(6, 6, 8, 160))   # 0.2.42: transparenter (war 200/135)
+            g.setColorAt(1.0, QColor(6, 6, 8, 95))
             p.setPen(Qt.NoPen); p.setBrush(QBrush(g))
             p.drawRect(QRectF(0, 0, w, h))
         else:
@@ -1697,6 +1735,60 @@ class OverlayStyleMixin:
         """0.4.9.6: dezente Linien - im hellen Design dunkel statt weiss."""
         c = self._fg()
         return QColor(c.red(), c.green(), c.blue(), alpha)
+
+    # ---- 0.2.42: Skalierung + Deckkraft fuer ALLE Overlays (Vorbild: Reifen-Overlay) ----
+    def set_ui_scale(self, scale):
+        new = max(0.5, min(2.5, float(scale) or 1.0))
+        self.ov_scale = new
+        if not getattr(self, "_ov_base_size", None):
+            self._ov_base_size = (self.width(), self.height())
+        bw, bh = self._ov_base_size
+        self.resize(int(bw * new), int(bh * new))
+        try:
+            _remember_overlay_state(self)
+        except Exception:
+            pass
+        self.update()
+
+    def set_ui_opacity(self, op):
+        self.ov_opacity = max(0.15, min(1.0, float(op)))
+        try:
+            self.setWindowOpacity(self.ov_opacity)
+            _remember_overlay_state(self)
+        except Exception:
+            pass
+
+    def _begin_paint(self):
+        """QPainter mit Skalierung: Der Fensterinhalt (inkl. Schrift) waechst
+        mit dem Faktor ov_scale mit, statt nur den Rahmen zu vergroessern."""
+        p = QPainter(self)
+        s = float(getattr(self, "ov_scale", 1.0) or 1.0)
+        if abs(s - 1.0) > 1e-6:
+            p.scale(s, s)
+        return p
+
+    def _lw(self):
+        return self.width() / max(0.05, float(getattr(self, "ov_scale", 1.0) or 1.0))
+
+    def _lh(self):
+        return self.height() / max(0.05, float(getattr(self, "ov_scale", 1.0) or 1.0))
+
+    def wheelEvent(self, event):
+        d = event.angleDelta().y()
+        if d != 0:
+            self.set_ui_scale(float(getattr(self, "ov_scale", 1.0) or 1.0) + (0.1 if d > 0 else -0.1))
+            event.accept()
+
+    def contextMenuEvent(self, event):
+        from PySide6.QtWidgets import QMenu
+        menu = QMenu(self)
+        sm = menu.addMenu("Skalierung")
+        for label, val in [("75 %", 0.75), ("100 %", 1.0), ("125 %", 1.25), ("150 %", 1.5), ("175 %", 1.75), ("200 %", 2.0)]:
+            sm.addAction(label, lambda v=val: self.set_ui_scale(v))
+        om = menu.addMenu("Deckkraft")
+        for label, val in [("20 %", 0.2), ("40 %", 0.4), ("60 %", 0.6), ("80 %", 0.8), ("100 %", 1.0)]:
+            om.addAction(label, lambda v=val: self.set_ui_opacity(v))
+        menu.exec(event.globalPos())
 
     # ---- 0.4.9.8: Groesse per Ziehen veraendern -------------------------
     def _ensure_grip(self):
@@ -1780,8 +1872,8 @@ class PitOverlayWindow(OverlayStyleMixin, QWidget):
     def mouseReleaseEvent(self, ev): self._drag = None
 
     def paintEvent(self, _):
-        p = QPainter(self); p.setRenderHint(QPainter.Antialiasing, True)
-        w, h = self.width(), self.height()
+        p = self._begin_paint(); p.setRenderHint(QPainter.Antialiasing, True)
+        w, h = self._lw(), self._lh()
         self._paint_frame(p, w, h)
         f = QFont(); f.setPointSize(9); f.setBold(True); p.setFont(f)
         self._draw_title(p, QRectF(10, 6, w - 20, 16), "BOXENSTOPP")
@@ -1844,8 +1936,8 @@ class DeltaOverlayWindow(OverlayStyleMixin, QWidget):
     def mouseReleaseEvent(self, ev): self._drag = None
 
     def paintEvent(self, _):
-        p = QPainter(self); p.setRenderHint(QPainter.Antialiasing, True)
-        w, h = self.width(), self.height()
+        p = self._begin_paint(); p.setRenderHint(QPainter.Antialiasing, True)
+        w, h = self._lw(), self._lh()
         self._paint_frame(p, w, h)
         f = QFont(); f.setPointSize(9); f.setBold(True); p.setFont(f)
         self._draw_title(p, QRectF(12, 6, w - 20, 16), "ABSTAND & DISTANZ")
@@ -1941,8 +2033,8 @@ class LapTimeOverlayWindow(OverlayStyleMixin, QWidget):
     def paintEvent(self, _):
         # 0.2.0: neu im RaceRoom-Stil. Kein Delta-Ring mehr (teure Boegen bei 20 Hz),
         # stattdessen grosse Delta-Zahl, drei Zeitspalten und ein schmaler Delta-Balken.
-        p = QPainter(self); p.setRenderHint(QPainter.Antialiasing, True)
-        w, h = self.width(), self.height()
+        p = self._begin_paint(); p.setRenderHint(QPainter.Antialiasing, True)
+        w, h = self._lw(), self._lh()
         self._paint_frame(p, w, h)
         s = self._d
         green = QColor("#3fb950"); red = QColor("#f85149")
@@ -2058,8 +2150,8 @@ class FlagOverlayWindow(OverlayStyleMixin, QWidget):
     def mouseReleaseEvent(self, ev): self._drag = None
 
     def paintEvent(self, _):
-        p = QPainter(self); p.setRenderHint(QPainter.Antialiasing, False)
-        w, h = self.width(), self.height()
+        p = self._begin_paint(); p.setRenderHint(QPainter.Antialiasing, False)
+        w, h = self._lw(), self._lh()
         self._paint_frame(p, w, h)
         base = {
             "green": QColor("#2ecc40"), "yellow": QColor("#ffd400"),
@@ -2132,8 +2224,8 @@ class LapGraphOverlayWindow(OverlayStyleMixin, QWidget):
     def mouseReleaseEvent(self, ev): self._drag = None
 
     def paintEvent(self, _):
-        p = QPainter(self); p.setRenderHint(QPainter.Antialiasing, True)
-        w, h = self.width(), self.height()
+        p = self._begin_paint(); p.setRenderHint(QPainter.Antialiasing, True)
+        w, h = self._lw(), self._lh()
         self._paint_frame(p, w, h)
         self._draw_title(p, QRectF(12, 6, w - 20, 16), "RUNDENZEITEN-GRAPH")
         ts = self._times
@@ -2231,8 +2323,8 @@ class OvertakeOverlayWindow(OverlayStyleMixin, QWidget):
     def mouseReleaseEvent(self, ev): self._drag = None
 
     def paintEvent(self, _):
-        p = QPainter(self); p.setRenderHint(QPainter.Antialiasing, True)
-        w, h = self.width(), self.height()
+        p = self._begin_paint(); p.setRenderHint(QPainter.Antialiasing, True)
+        w, h = self._lw(), self._lh()
         self._paint_frame(p, w, h)
         self._draw_title(p, QRectF(10, 6, w - 20, 16), "\u00dcBERHOLALARM")
         rows = self._rows
@@ -2400,8 +2492,8 @@ class DamageOverlayWindow(OverlayStyleMixin, QWidget):
         self.update()
 
     def paintEvent(self, _):
-        p = QPainter(self); p.setRenderHint(QPainter.Antialiasing, True)
-        w, h = self.width(), self.height()
+        p = self._begin_paint(); p.setRenderHint(QPainter.Antialiasing, True)
+        w, h = self._lw(), self._lh()
         self._paint_frame(p, w, h)
         f = QFont(); f.setPointSize(9); f.setBold(True); p.setFont(f)
         self._draw_title(p, QRectF(10, 6, w - 20, 16), "SCHADEN")
@@ -2595,8 +2687,8 @@ class CornerNameOverlayWindow(OverlayStyleMixin, QWidget):
         self._drag = None
 
     def paintEvent(self, ev):
-        p = QPainter(self)
-        self._paint_frame(p, self.width(), self.height())
+        p = self._begin_paint()
+        self._paint_frame(p, self._lw(), self._lh())
         p.setRenderHint(QPainter.Antialiasing, True)
         p.setPen(QPen(self._muted()))
         f = QFont()
@@ -2604,7 +2696,7 @@ class CornerNameOverlayWindow(OverlayStyleMixin, QWidget):
         f.setBold(True)
         p.setFont(f)
         head = "NAECHSTE KURVE" + ((" - " + self._track) if self._track else "")
-        p.drawText(QRectF(12, 8, self.width() - 24, 16), Qt.AlignLeft, head)
+        p.drawText(QRectF(12, 8, self._lw() - 24, 16), Qt.AlignLeft, head)
         fg = self._fg()
         f2 = QFont()
         f2.setPointSize(15 if len(self._name) <= 14 else 11)
@@ -2613,17 +2705,17 @@ class CornerNameOverlayWindow(OverlayStyleMixin, QWidget):
         p.setPen(QPen(fg))
         arrow = "L" if self._dir == "L" else ("R" if self._dir == "R" else "")
         label = ((arrow + "  ") if arrow else "") + self._name
-        p.drawText(QRectF(12, 26, self.width() - 24, 34), Qt.AlignLeft, label)
+        p.drawText(QRectF(12, 26, self._lw() - 24, 34), Qt.AlignLeft, label)
         f3 = QFont()
         f3.setPointSize(10)
         p.setFont(f3)
         if self._dist_m is None:
             p.setPen(QPen(self._muted()))
-            p.drawText(QRectF(12, 60, self.width() - 24, 22), Qt.AlignLeft,
+            p.drawText(QRectF(12, 60, self._lw() - 24, 22), Qt.AlignLeft,
                        "keine Kurvendaten - erst eine Runde fahren")
         else:
             p.setPen(QPen(QColor("#e8212b")))
-            p.drawText(QRectF(12, 60, self.width() - 24, 22), Qt.AlignLeft,
+            p.drawText(QRectF(12, 60, self._lw() - 24, 22), Qt.AlignLeft,
                        "in " + str(int(round(self._dist_m))) + " m")
         p.end()
 
@@ -2690,8 +2782,8 @@ class OverlayWindow(OverlayStyleMixin, QWidget):
 
     def paintEvent(self, event):
         # Gleicher halbtransparenter HUD-Look wie Reifen-Overlay, aber kompakter.
-        painter = QPainter(self)
-        self._paint_frame(painter, self.width(), self.height())
+        painter = self._begin_paint()
+        self._paint_frame(painter, self._lw(), self._lh())
 
     def _restyle(self):
         light = self._st() == "light"
@@ -2900,9 +2992,9 @@ class TireMiniWidget(OverlayStyleMixin, QWidget):
         return QColor(240, 45, 30)
 
     def paintEvent(self, event):
-        p = QPainter(self)
+        p = self._begin_paint()
         p.setRenderHint(QPainter.Antialiasing)
-        w = self.width(); h = self.height()
+        w = self._lw(); h = self._lh()
 
         def F(px, bold=False):
             f = p.font(); f.setPointSizeF(max(6.0, px)); f.setBold(bold); p.setFont(f)
@@ -3261,19 +3353,19 @@ class PedalOverlayWindow(OverlayStyleMixin, QWidget):
         return path
 
     def paintEvent(self, _):
-        p = QPainter(self)
+        p = self._begin_paint()
         p.setRenderHint(QPainter.Antialiasing, True)
 
         # Karte
-        self._paint_frame(p, self.width(), self.height())
+        self._paint_frame(p, self._lw(), self._lh())
 
-        gutter = 80 if self.width() > 210 else 0   # 0.5.1.0: Balken rechts (Bild 4)
+        gutter = 80 if self._lw() > 210 else 0   # 0.5.1.0: Balken rechts (Bild 4)
         ml, mr, mb = 10, 8, 8
         mt = 20 if gutter else 8                   # 0.2.0: Platz fuer die Balken-Beschriftung (war abgeschnitten)
         x0 = ml
-        plot_w = self.width() - ml - mr - gutter
+        plot_w = self._lw() - ml - mr - gutter
         top = mt
-        bottom = self.height() - mb
+        bottom = self._lh() - mb
         h = bottom - top
         if plot_w <= 2 or h <= 2:
             return
@@ -3745,9 +3837,9 @@ class BlindSpotOverlayWindow(OverlayStyleMixin, QWidget):
         p.drawText(QRectF(x - 6, y + sq + 3, sq + 12, 12), Qt.AlignCenter, label)
 
     def paintEvent(self, _):
-        p = QPainter(self)
+        p = self._begin_paint()
         p.setRenderHint(QPainter.Antialiasing, True)
-        w, h = self.width(), self.height()
+        w, h = self._lw(), self._lh()
         self._paint_frame(p, w, h)
         sq = min(h - 34, (w - 36) / 2)
         sq = max(24, sq)
@@ -3975,8 +4067,8 @@ class BrakeTempOverlayWindow(OverlayStyleMixin, QWidget):
         self._drag = None
 
     def paintEvent(self, _):
-        p = QPainter(self); p.setRenderHint(QPainter.Antialiasing, True)
-        w, h = self.width(), self.height()
+        p = self._begin_paint(); p.setRenderHint(QPainter.Antialiasing, True)
+        w, h = self._lw(), self._lh()
         self._paint_frame(p, w, h)
         f = QFont(); f.setPointSize(9); f.setBold(True); p.setFont(f)
         self._draw_title(p, QRectF(10, 6, w - 20, 16), "BREMSEN \u00b0C")
@@ -4093,8 +4185,8 @@ class FuelOverlayWindow(OverlayStyleMixin, QWidget):
         self._drag = None
 
     def paintEvent(self, _):
-        p = QPainter(self); p.setRenderHint(QPainter.Antialiasing, True)
-        w, h = self.width(), self.height()
+        p = self._begin_paint(); p.setRenderHint(QPainter.Antialiasing, True)
+        w, h = self._lw(), self._lh()
         self._paint_frame(p, w, h)
         f = QFont(); f.setPointSize(9); f.setBold(True); p.setFont(f)
         self._draw_title(p, QRectF(10, 6, w - 20, 16), "KRAFTSTOFF")
@@ -4195,8 +4287,8 @@ class FFBOverlayWindow(OverlayStyleMixin, QWidget):
         self.reset_stats(); self.update()
 
     def paintEvent(self, _):
-        p = QPainter(self); p.setRenderHint(QPainter.Antialiasing, True)
-        w, h = self.width(), self.height()
+        p = self._begin_paint(); p.setRenderHint(QPainter.Antialiasing, True)
+        w, h = self._lw(), self._lh()
         self._paint_frame(p, w, h)
         f = QFont(); f.setPointSize(9); f.setBold(True); p.setFont(f)
         self._draw_title(p, QRectF(10, 6, w - 20, 16), "FORCE FEEDBACK")
@@ -4368,10 +4460,10 @@ class LimitOverlayWindow(OverlayStyleMixin, QWidget):
         self.update()
 
     def paintEvent(self, _):
-        p = QPainter(self)
+        p = self._begin_paint()
         p.setRenderHint(QPainter.Antialiasing, True)
-        w = self.width()
-        h = self.height()
+        w = self._lw()
+        h = self._lh()
         # Hintergrund
         self._paint_frame(p, w, h)
 
