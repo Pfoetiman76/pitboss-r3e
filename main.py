@@ -31,7 +31,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.30 Beta"
+APP_VERSION = "0.2.31 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -61,6 +61,26 @@ BLINDSPOT_CONFIG_PATH = EXPORT_DIR / "blindspot.json"  # 0.5.9.13: Toter-Winkel 
 HOTKEY_CONFIG_PATH = EXPORT_DIR / "hotkeys.json"  # 0.2.5: frei belegbare Hotkeys (Stream Deck)
 START_MODE_PATH = EXPORT_DIR / "start_mode.json"  # 0.2.7: gemerkter Start-Modus
 UI_LAYOUT_PATH = EXPORT_DIR / "ui_layout.json"  # 0.2.10: Einfache Ansicht vs. Experte
+ANALYSIS_CONFIG_PATH = EXPORT_DIR / "analysis_config.json"  # 0.2.31: Auswertungs-Optionen
+
+def load_analysis_config() -> dict:
+    """0.2.31: {"include_invalid_laps": bool} laden; ungueltig -> Standard."""
+    try:
+        raw = json.loads(ANALYSIS_CONFIG_PATH.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            return raw
+    except Exception:
+        pass
+    return {"include_invalid_laps": False}
+
+def save_analysis_config(cfg: dict) -> bool:
+    """0.2.31: Auswertungs-Optionen in Dokumente\\PitBoss R3E\\analysis_config.json speichern."""
+    try:
+        EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        ANALYSIS_CONFIG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+        return True
+    except Exception:
+        return False
 
 # 0.2.10: Einfache Ansicht - nur diese Hauptansichten, der Rest bleibt
 # ueber den Experte-Modus (Mehr > Einfache Ansicht) erreichbar. Nichts wird geloescht.
@@ -4664,6 +4684,7 @@ class Main(QMainWindow):
         self._tire_overlay_autoshown = False
         self.auto_bestlap_export_enabled = True
         self.auto_switch_recording_enabled = True  # 0.5.9.24: Auto-Stop/Start bei Strecken-/Fahrzeugwechsel
+        self.include_invalid_laps = bool(load_analysis_config().get("include_invalid_laps", False))  # 0.2.31
         self.pending_switch_signature = None
         self.pending_switch_count = 0
         self.auto_bestlap_export_path = None
@@ -4845,6 +4866,10 @@ class Main(QMainWindow):
         self.act_auto_switch.setCheckable(True)
         self.act_auto_switch.triggered.connect(lambda _c=False: self.btn_auto_switch.click())
         _more.addAction("Live-Telemetrie-Log (Debug) ein/aus", self.btn_live_log.click)
+        self.act_include_invalid = _more.addAction("Ungültige Runden in Auswertung (inkl. Referenz/Vergleich)")  # 0.2.31
+        self.act_include_invalid.setCheckable(True)
+        self.act_include_invalid.setChecked(bool(self.include_invalid_laps))
+        self.act_include_invalid.toggled.connect(self.toggle_include_invalid_laps)
         _more.addAction("Hotkeys belegen …", self.open_hotkey_settings)  # 0.2.5
         _more.addSeparator()
         _more.addAction("Export-Ordner öffnen", self.btn_export.click)
@@ -7331,7 +7356,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         return self.build_reference_payload_from_rows(lap, self.samples)
 
     def best_exportable_lap(self) -> Optional[LapSummary]:
-        clean = [l for l in self.lap_summaries if l.is_clean]
+        clean = [l for l in self.lap_summaries if self.lap_eval_ok(l)]  # 0.2.31
         if not clean:
             return None
         max_cov = max((l.coverage_m for l in clean), default=0.0)
@@ -7463,7 +7488,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
     def refresh_lap_combos(self):
         if not hasattr(self, "ref_lap_combo"):
             return
-        clean = [l for l in self.lap_summaries if l.is_clean]
+        clean = [l for l in self.lap_summaries if self.lap_eval_ok(l)]  # 0.2.31
         old_ref = "__external__" if self.use_external_reference and self.external_reference else self.manual_reference_lap
         old_cmp = self.manual_compare_lap
         self.ref_lap_combo.blockSignals(True); self.cmp_lap_combo.blockSignals(True)
@@ -7509,7 +7534,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         if lap_number is None:
             return None
         for l in self.lap_summaries:
-            if l.lap_number == lap_number and l.is_clean:
+            if l.lap_number == lap_number and self.lap_eval_ok(l):  # 0.2.31: manuelle Referenz erlaubt bei 'Ungültige Runden in Auswertung'
                 return l
         return None
 
@@ -8382,13 +8407,46 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 self.lap_overview_table.setItem(row, c, item)
         self.lap_overview_table.resizeColumnsToContents()
 
+    def lap_eval_ok(self, lap) -> bool:
+        """0.2.31: Zaehlt eine Runde als auswertbar, wenn sie sauber ist ODER
+        wenn 'Ungültige Runden in Auswertung' aktiviert ist (dann muessen sie
+        mindestens komplett gefahren sein). Ungueltige = z. B. Track-Limits
+        (Runde abgewinkelt), die Fahrdaten sind trotzdem brauchbar."""
+        if getattr(lap, "is_clean", False):
+            return True
+        return bool(getattr(self, "include_invalid_laps", False)) and bool(getattr(lap, "is_complete", False))
+
+    def toggle_include_invalid_laps(self, checked: bool):
+        """0.2.31: 'Ungültige Runden in Auswertung' - wirkt auf Referenzwahl,
+        Rundenauswahl-Combos, Vergleichsrunden, Sektor-/Zonen-Auswertung und
+        Auto-Bestlap-Export. Nach dem Umschalten alles neu rechnen."""
+        self.include_invalid_laps = bool(checked)
+        save_analysis_config({"include_invalid_laps": self.include_invalid_laps})
+        self.log.append(
+            "Ungültige Runden " + ("IN der Auswertung (inkl. Referenz/Vergleich). Achtung: abgewinkelte Runden verfälschen Referenz-Vergleiche." if self.include_invalid_laps
+            else "wieder AUS der Auswertung entfernt (nur saubere Runden).")
+        )
+        try:
+            if self.samples:
+                self.update_laps()
+                self.update_segments()
+                self.update_lap_compare()
+                self.update_heatmap()
+                self.update_telemetry_view()
+                self.update_coach_text()
+                self.update_input_coach()
+                self.refresh_dashboard()
+        except Exception as e:
+            self.log.append(f"Neuberechnung nach Runden-Filterwechsel fehlgeschlagen: {type(e).__name__}: {e}")
+
     def update_laps(self):
         self.lap_summaries = self.build_lap_summaries()
-        clean = [l for l in self.lap_summaries if l.is_clean]
+        clean = [l for l in self.lap_summaries if self.lap_eval_ok(l)]  # 0.2.31: optional inkl. ungültiger Runden
         # 3.7: Auto reference can be overridden manually.
         manual_ref = self.lap_by_number(self.manual_reference_lap)
         # 0.2.4: Manuelle Referenz muss sauber sein - keine ungültige Runde als Referenz.
-        if manual_ref is not None and not manual_ref.is_clean:
+        # 0.2.31: ... es sei denn, 'Ungültige Runden in Auswertung' ist aktiviert.
+        if manual_ref is not None and not self.lap_eval_ok(manual_ref):
             self.log.append(f"Manuell gewählte Referenz Lap {manual_ref.lap_number} ist nicht sauber ({manual_ref.reason}) - Referenz ignoriert, Auto-Referenz wird genutzt.")
             manual_ref = None
         self.reference_lap = manual_ref or (min(clean, key=lambda l: self.estimated_lap_time_from_speed(l.lap_number)) if clean else None)
@@ -8397,7 +8455,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         self.laps_table.setRowCount(0)
         for lap in self.lap_summaries:
             row = self.laps_table.rowCount(); self.laps_table.insertRow(row)
-            status = "REFERENZ" if self.reference_lap and lap.lap_number == self.reference_lap.lap_number else ("gültig" if lap.is_clean else "ausgeschlossen")
+            status = "REFERENZ" if self.reference_lap and lap.lap_number == self.reference_lap.lap_number else ("gültig" if lap.is_clean else ("ungültig (einbezogen)" if self.include_invalid_laps else "ausgeschlossen"))
             ch = self.telemetry_channels_active()
             vals = [
                 lap.lap_number, status, lap.reason, lap.samples, f"{lap.coverage_m:.1f}",
@@ -8848,7 +8906,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
     def plausible_compare_laps(self, ref_segments: dict, use_external: bool = False) -> List[LapSummary]:
         out = []
         rejected = []
-        for lap in [l for l in self.lap_summaries if l.is_clean]:
+        for lap in [l for l in self.lap_summaries if self.lap_eval_ok(l)]:  # 0.2.31
             if not use_external and self.reference_lap and lap.lap_number == self.reference_lap.lap_number:
                 continue
             # 4.0.4.5.2: Wenn die externe Referenz gerade aus dieser Session automatisch exportiert wurde,
@@ -10273,6 +10331,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
