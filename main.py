@@ -31,7 +31,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.33 Beta"
+APP_VERSION = "0.2.34 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -247,17 +247,21 @@ def start_mode_label(mode):
 
 
 class BetaFeedbackDialog(QDialog):
-    """0.2.33: Beta-Tester-Formular fuer Bugs und Aenderungswuensche.
+    """0.2.33/0.2.34: Beta-Tester-Formular fuer Bugs und Aenderungswuensche.
 
-    Empfohlener Weg: 'In GitHub oeffnen' - oeffnet im Browser einen
-    vor-ausgefuellten Issue (Titel + Beschreibung + Version + optionaler
-    Log-Auszug). Der Tester braucht nur einen GitHub-Account im Browser,
-    nichts in der App selbst.
+    Empfohlener Weg (0.2.34): 'Per E-Mail senden' - oeffnet das Mail-Programm
+    mit einer fertig ausgefuellten E-Mail an den Entwickler (Betreff + Text
+    inkl. Version und optionalem Log-Auszug). Nur noch 'Senden' klicken.
+    Der komplette Text steht zusaetzlich in der Zwischenablage, falls das
+    Mail-Programm den langen Text abschneidet.
 
-    Offline-Alternative: 'Kopieren & speichern' -legt den Text in die
+    Alternative 1: 'In GitHub oeffnen' - vor-ausgefuelltes Issue im Browser.
+
+    Alternative 2: 'Kopieren & speichern' - legt den Text in die
     Zwischenablage und als Datei unter Dokumente\\PitBoss R3E\\feedback\\ ab,
     der Ordner oeffnet sich direkt zum Weitergeben (Mail/Discord).
     """
+    FEEDBACK_EMAIL = "pfoetiman76@hotmail.com"  # 0.2.34: Empfänger für Beta-Feedback
 
     CATEGORIES = (
         "Bug / Fehler",
@@ -291,17 +295,20 @@ class BetaFeedbackDialog(QDialog):
         self.chk_log.setChecked(True)
         lay.addWidget(self.chk_log)
 
-        hint = QLabel("Empfohlen: 'In GitHub öffnen' – es öffnet sich ein vor-ausgefülltes Issue im Browser, du musst nur noch 'Submit' klicken. Alternativ 'Kopieren & speichern' für eine Feedback-Datei.")
+        hint = QLabel("Empfohlen: 'Per E-Mail senden' – es öffnet sich dein Mail-Programm mit fertig ausgefüllter E-Mail, nur noch 'Senden' klicken. Alternativ 'In GitHub öffnen' (braucht GitHub-Account) oder 'Kopieren & speichern' für eine Feedback-Datei.")
         hint.setWordWrap(True)
         lay.addWidget(hint)
 
-        self.btn_github = QPushButton("In GitHub öffnen (empfohlen)")
+        self.btn_email = QPushButton("Per E-Mail senden (empfohlen)")
+        self.btn_email.clicked.connect(self._open_email)
+        self.btn_github = QPushButton("In GitHub öffnen")
         self.btn_github.clicked.connect(self._open_github)
         self.btn_copy = QPushButton("Kopieren & als Datei speichern (offline)")
         self.btn_copy.clicked.connect(self._copy_and_save)
         self.btn_close = QPushButton("Schließen")
         self.btn_close.clicked.connect(self.reject)
         bb = QHBoxLayout()
+        bb.addWidget(self.btn_email)
         bb.addWidget(self.btn_github)
         bb.addWidget(self.btn_copy)
         bb.addStretch(1)
@@ -331,6 +338,31 @@ class BetaFeedbackDialog(QDialog):
                 tail = "(Log nicht verfügbar)"
             lines += ["**Log-Auszug (letzte 30 Zeilen):**", "```", tail, "```", ""]
         return title, "\n".join(lines)
+
+    def _open_email(self):
+        """0.2.34: Standard-Mail-Programm mit fertig ausgefuellter Feedback-
+        E-Mail oeffnen. Der Text liegt zusaetzlich in der Zwischenablage,
+        falls mailto den langen Body (Log-Auszug) abschneidet."""
+        from urllib.parse import quote as _quote
+        title, body = self.feedback_text()
+        if not title:
+            QMessageBox.information(self, "Beta-Feedback", "Bitte vorher einen kurzen Titel eingeben.")
+            return
+        try:
+            QApplication.clipboard().setText(body)
+        except Exception:
+            pass
+        subject = f"[PitBoss R3E {APP_VERSION}] {self.combo_cat.currentText()}: {title}"
+        # mailto-Bodies sind praktisch auf ~2000 Zeichen begrenzt: Log-Auszug
+        # fuer die Mail kuerzen, voller Text steht ja in der Zwischenablage.
+        mail_body = body
+        if len(mail_body) > 1800:
+            mail_body = mail_body[:1800] + "\n\n[... gekürzt – vollständiger Text liegt in der Zwischenablage und in der Log-Datei]"
+        url = ("mailto:" + self.FEEDBACK_EMAIL
+               + "?subject=" + _quote(subject)
+               + "&body=" + _quote(mail_body))
+        QDesktopServices.openUrl(QUrl(url))
+        self.main.log.append("Beta-Feedback: E-Mail an " + self.FEEDBACK_EMAIL + " vorbereitet (Kategorie: " + self.combo_cat.currentText() + ", voller Text in der Zwischenablage).")
 
     def _open_github(self):
         from urllib.parse import quote as _quote
