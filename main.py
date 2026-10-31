@@ -32,7 +32,7 @@ from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.43 Beta"
+APP_VERSION = "0.2.44 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -1773,9 +1773,42 @@ class OverlayStyleMixin:
 
     def wheelEvent(self, event):
         d = event.angleDelta().y()
-        if d != 0:
+        if d == 0:
+            return
+        if event.modifiers() & Qt.AltModifier:
+            # 0.2.44: Alt+Mausrad regelt die Deckkraft in 5-%-Schritten (Transparenz
+            # des kompletten Overlay-Inhalts - ohne Hintergrund bleibt nur der Text/ die
+            # Grafik selbst halbtransparent, z. B. ueber hellen Streckenabschnitten).
+            self.set_ui_opacity(float(getattr(self, "ov_opacity", 1.0) or 1.0) + (0.05 if d > 0 else -0.05))
+        else:
             self.set_ui_scale(float(getattr(self, "ov_scale", 1.0) or 1.0) + (0.1 if d > 0 else -0.1))
-            event.accept()
+        event.accept()
+
+    def _opacity_dialog(self):
+        """0.2.44: feiner Deckkraft-Regler (Schieberegler) mit Live-Vorschau."""
+        from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QSlider, QDialogButtonBox
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Deckkraft")
+        dlg.setModal(False)
+        lay = QVBoxLayout(dlg)
+        val = QLabel()
+        lay.addWidget(val)
+        sl = QSlider(Qt.Horizontal)
+        sl.setRange(15, 100)
+        sl.setValue(int(round(float(getattr(self, "ov_opacity", 1.0) or 1.0) * 100)))
+        def _apply(v):
+            val.setText(f"{v} %")
+            self.set_ui_opacity(float(v) / 100.0)
+        sl.valueChanged.connect(_apply)
+        _apply(sl.value())
+        lay.addWidget(sl)
+        hint = QLabel("Wirkt sofort und wird für dieses Overlay gespeichert.")
+        hint.setStyleSheet("color: #888;")
+        lay.addWidget(hint)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok)
+        bb.accepted.connect(dlg.accept)
+        lay.addWidget(bb)
+        dlg.exec()
 
     def contextMenuEvent(self, event):
         from PySide6.QtWidgets import QMenu
@@ -1784,8 +1817,12 @@ class OverlayStyleMixin:
         for label, val in [("75 %", 0.75), ("100 %", 1.0), ("125 %", 1.25), ("150 %", 1.5), ("175 %", 1.75), ("200 %", 2.0)]:
             sm.addAction(label, lambda v=val: self.set_ui_scale(v))
         om = menu.addMenu("Deckkraft")
+        # 0.2.44: 10-%-Stufen plus feiner Regler - kombinierbar mit dem
+        # Hintergrundlosen transparenten Design aus 0.2.43.
         for label, val in [("20 %", 0.2), ("40 %", 0.4), ("60 %", 0.6), ("80 %", 0.8), ("100 %", 1.0)]:
             om.addAction(label, lambda v=val: self.set_ui_opacity(v))
+        om.addSeparator()
+        om.addAction("Regler … (Alt+Mausrad: 5-%-Schritte)", self._opacity_dialog)
         menu.exec(event.globalPos())
 
     # ---- 0.4.9.8: Groesse per Ziehen veraendern -------------------------
@@ -3127,7 +3164,10 @@ class TireOverlayWindow(OverlayStyleMixin, QWidget):
     def wheelEvent(self, event):
         d = event.angleDelta().y()
         if d != 0:
-            self.set_ui_scale(self.ui_scale + (0.1 if d > 0 else -0.1))
+            if event.modifiers() & Qt.AltModifier:  # 0.2.44: Alt+Mausrad = Deckkraft
+                self.set_ui_opacity(getattr(self, "ui_opacity", 1.0) + (0.05 if d > 0 else -0.05))
+            else:
+                self.set_ui_scale(self.ui_scale + (0.1 if d > 0 else -0.1))
             event.accept()
 
     def contextMenuEvent(self, event):
@@ -3139,6 +3179,8 @@ class TireOverlayWindow(OverlayStyleMixin, QWidget):
         om = menu.addMenu("Deckkraft")
         for label, val in [("40 %", 0.4), ("60 %", 0.6), ("75 %", 0.75), ("90 %", 0.9), ("100 %", 1.0)]:
             om.addAction(label, lambda v=val: self.set_ui_opacity(v))
+        om.addSeparator()
+        om.addAction("Regler … (Alt+Mausrad: 5-%-Schritte)", OverlayStyleMixin._opacity_dialog.__get__(self, TireOverlayWindow))
         menu.exec(event.globalPos())
 
     def paintEvent(self, event):
