@@ -29,9 +29,10 @@ from tts import SpeechEngine  # 0.4.7.2: Offline-Sprachausgabe
 import updater  # 0.4.7.5: Update-Pruefung ueber GitHub Releases
 import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
+from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.37 Beta"
+APP_VERSION = "0.2.38 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -839,6 +840,7 @@ class Sample:
     pit_elapsed_s: float = -1.0
     pit_total_s: float = -1.0
     track_length_m: float = 0.0       # 0.2.9: layout_length aus dem Spiel (0 = unbekannt)
+    layout_id: int = 0                   # 0.2.38: Layout-ID aus dem Spiel fuer echte Kurvennamen
     sector_bounds_m: tuple = ()       # 0.2.9: offizielle innere Sektorgrenzen in m (S1-Ende, S2-Ende); leer = unbekannt
     # 0.2.20: zusaetzliche Telemetrie-Kanaele (Reader -> Sample -> CSV)
     g_force_lat: float = 0.0          # 0.2.20: Quer-G-Kraft (mLocalGForce.x)
@@ -6404,6 +6406,33 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         tl = float(getattr(s, "track_length_m", 0.0) or 0.0)
         if tl <= 0:
             tl = float(getattr(self, "corner_track_len", 0.0) or 0.0)
+        # 0.2.38: Layout in der eingebauten Kurvennamen-Datenbank? -> echte Namen
+        layout_id = int(getattr(s, "layout_id", 0) or 0)
+        sections = CORNER_SECTIONS.get(layout_id) if layout_id else None
+        if sections:
+            cur_sec = None
+            for sec in sections:
+                if sec[0] <= cur <= sec[1]:
+                    cur_sec = sec
+                    break
+            nxt, nxt_d = None, None
+            for sec in sections:
+                d = float(sec[0]) - cur
+                if d < 0 and tl > 100.0:
+                    d += tl
+                if d < 0:
+                    continue
+                if sec[2] == "Start-Finish":
+                    continue
+                if nxt is None or d < nxt_d:
+                    nxt, nxt_d = sec[2], d
+            if cur_sec is not None and cur_sec[2] != "Start-Finish":
+                w.set_info(track, cur_sec[2], "", nxt_d)
+            elif nxt is not None:
+                w.set_info(track, nxt, "", nxt_d)
+            else:
+                w.set_info(track, "-", "", None)
+            return
         best, best_d = None, None
         for c in corners:
             d = float(c.get("lap_dist_m", 0.0)) - cur
