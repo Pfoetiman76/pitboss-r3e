@@ -929,7 +929,7 @@ class R3EReader:
             # 0.2.20: zusaetzliche Telemetrie-Kanaele fuer CSV/Analyse
             g_force_lat=_f(P.local_g_force.x),
             g_force_long=_f(P.local_g_force.z),
-            heading_deg=math.degrees(_f(P.orientation.yaw)) % 360.0,
+            heading_deg=math.degrees(_f(d.car_orientation.yaw)) % 360.0,  # 0.2.40: Fix - player.orientation ist vec3 (x/y/z, Euler), das yaw-Feld liegt in car_orientation (r3e_ori_f32: Pitch/Yaw/Roll)
             velocity_lat_ms=_f(P.local_velocity.x),
             velocity_long_ms=_f(P.local_velocity.z),
             engine_torque_nm=_f(P.engine_torque),
@@ -994,6 +994,7 @@ def make_demo_shared(n_cars: int = 4) -> "R3EShared":
     d.brake = d.brake_raw = 0.0
     d.clutch = d.clutch_raw = 0.0
     d.steer_input_raw = -0.12
+    d.car_orientation.yaw = 2.75  # 0.2.40: Heading (Rad) - Selftest deckt den Regressionstest ab
     d.brake_bias = 0.56
     d.pit_limiter = 0
     d.pit_state = 0
@@ -1062,6 +1063,7 @@ def _selftest() -> int:
     check("Streckenlaenge aus Spiel", abs(getattr(s, "track_length_m", 0.0) - 5148.0) < 0.5, s.track_length_m)
     check("S2 kumulativ", abs(s.last_sector2_s - 79.4) < 1e-4, s.last_sector2_s)
     check("Layout-ID aus Spiel", getattr(s, "layout_id", 0) == 1691, s.layout_id)
+    check("Heading (Fahrtrichtung)", abs(getattr(s, "heading_deg", -1.0) - (math.degrees(2.75) % 360.0)) < 0.01, getattr(s, "heading_deg", None))
     check("Session Rennen", s.session_type == 10 and s.game_phase == 5)
     check("Restzeit", abs(s.session_remaining_s - 1500.0) < 1e-3 and abs(s.session_current_et - 300.0) < 1e-3)
     check("Auto-/Klassenname", s.vehicle_name.startswith("Aquila") or s.vehicle_name == "R3E Car 252", s.vehicle_name)
