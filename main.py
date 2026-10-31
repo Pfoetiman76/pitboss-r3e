@@ -32,7 +32,7 @@ from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.46 Beta"
+APP_VERSION = "0.2.47 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -1594,10 +1594,9 @@ def _restore_overlay_size(widget):
             widget.ov_opacity = max(0.15, min(1.0, float(op))) if op else 1.0
         except Exception:
             widget.ov_opacity = 1.0
-        try:
-            widget.setWindowOpacity(widget.ov_opacity)
-        except Exception:
-            pass
+        # 0.2.47: Die gemerkte Deckkraft wirkt im Hintergrund (Alpha), nicht mehr
+        # als Fenster-Deckkraft - ein setWindowOpacity entfaellt hier. Beim naechsten
+        # paintEvent fliesst ov_opacity automatisch in _bg()/_panel() ein.
     except Exception:
         pass
 
@@ -1663,21 +1662,33 @@ class OverlayStyleMixin:
     def _st(self):
         return getattr(self, "overlay_style", "transparent")
 
+    def _ovop(self):
+        """0.2.47: Deckkraft-Faktor NUR fuer Hintergrund-Flaechen. Die Schrift und
+        die Graphiken bleiben immer voll deckend und lesbar. Das Reifen-Overlay
+        blendet weiterhin das komplette Fenster ab (eigene setWindowOpacity-Logik)
+        und wird hier nicht zusaetzlich abgeschwaecht."""
+        try:
+            if type(self).__name__ == "TireOverlayWindow":
+                return 1.0
+            return max(0.15, min(1.0, float(getattr(self, "ov_opacity", 1.0))))
+        except Exception:
+            return 1.0
+
     def _bg(self):
         s = self._st()
         if s == "light":
-            return QColor(250, 250, 252, 255)
+            return QColor(250, 250, 252, int(255 * self._ovop()))
         if s == "dark":
-            return QColor(12, 12, 14, 255)
-        return QColor(12, 12, 14, 222)
+            return QColor(12, 12, 14, int(255 * self._ovop()))
+        return QColor(12, 12, 14, int(222 * self._ovop()))
 
     def _panel(self):
         s = self._st()
         if s == "light":
-            return QColor(255, 255, 255, 255)
+            return QColor(255, 255, 255, int(255 * self._ovop()))
         if s == "dark":
-            return QColor(24, 24, 28, 255)
-        return QColor(24, 24, 28, 225)
+            return QColor(24, 24, 28, int(255 * self._ovop()))
+        return QColor(24, 24, 28, int(225 * self._ovop()))
 
     def _fg(self):
         return QColor("#16161a") if self._st() == "light" else QColor("#ffffff")
@@ -1700,10 +1711,13 @@ class OverlayStyleMixin:
         p.setRenderHint(QPainter.Antialiasing, True)
         st = self._st()
         if st == "transparent":
-            # 0.2.43: Nutzerwunsch - im transparenten Design GAR KEIN Hintergrund
-            # (weder Verlauf noch Flaeche). Text bleibt ueber dem Spiel lesbar,
-            # die Strecke scheint voll durch. 'dark'/'light' zeichnen wie bisher.
-            p.setPen(Qt.NoPen); p.setBrush(Qt.NoBrush)
+            # 0.2.47: Der Deckkraft-Regler steuert jetzt den Hintergrund (Alpha
+            # der Flaeche), nicht mehr die komplette Fenster-Deckkraft. Bei
+            # niedrigem Wert bleibt der vollstaendig durchscheinende Look aus
+            # 0.2.43 erhalten, bei 100 % gibt es den gut lesbaren dunklen
+            # Hintergrund zurueck. Die Schrift bleibt in jedem Fall voll deckend.
+            p.setPen(Qt.NoPen); p.setBrush(self._bg())
+            p.drawRect(QRectF(0, 0, w, h))
         else:
             p.setPen(QPen(self._border(), 1)); p.setBrush(self._bg())
             p.drawRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0))
@@ -1749,12 +1763,15 @@ class OverlayStyleMixin:
         self.update()
 
     def set_ui_opacity(self, op):
+        # 0.2.47: KEIN setWindowOpacity mehr - das blendete bisher Schrift und
+        # Grafik mit ab. Die Deckkraft wirkt jetzt nur noch auf den Hintergrund
+        # (siehe _bg/_panel/_paint_frame); der Inhalt bleibt voll lesbar.
         self.ov_opacity = max(0.15, min(1.0, float(op)))
         try:
-            self.setWindowOpacity(self.ov_opacity)
             _remember_overlay_state(self)
         except Exception:
             pass
+        self.update()
 
     def _begin_paint(self):
         """QPainter mit Skalierung: Der Fensterinhalt (inkl. Schrift) waechst
@@ -1776,9 +1793,9 @@ class OverlayStyleMixin:
         if d == 0:
             return
         if event.modifiers() & Qt.AltModifier:
-            # 0.2.44: Alt+Mausrad regelt die Deckkraft in 5-%-Schritten (Transparenz
-            # des kompletten Overlay-Inhalts - ohne Hintergrund bleibt nur der Text/ die
-            # Grafik selbst halbtransparent, z. B. ueber hellen Streckenabschnitten).
+            # 0.2.44/0.2.47: Alt+Mausrad regelt die Deckkraft in 5-%-Schritten.
+            # Seit 0.2.47 steuert sie die Staerke des Hintergrunds; die Schrift
+            # bleibt immer voll deckend.
             self.set_ui_opacity(float(getattr(self, "ov_opacity", 1.0) or 1.0) + (0.05 if d > 0 else -0.05))
         else:
             self.set_ui_scale(float(getattr(self, "ov_scale", 1.0) or 1.0) + (0.1 if d > 0 else -0.1))
@@ -1802,7 +1819,7 @@ class OverlayStyleMixin:
         sl.valueChanged.connect(_apply)
         _apply(sl.value())
         lay.addWidget(sl)
-        hint = QLabel("Wirkt sofort und wird für dieses Overlay gespeichert.")
+        hint = QLabel("Regelt die Staerke des Hintergrunds. Die Schrift bleibt voll lesbar.\nWirkt sofort und wird für dieses Overlay gespeichert.")
         hint.setStyleSheet("color: #888;")
         lay.addWidget(hint)
         bb = QDialogButtonBox(QDialogButtonBox.Ok)
