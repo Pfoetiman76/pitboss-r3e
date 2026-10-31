@@ -32,7 +32,7 @@ from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.42 Beta"
+APP_VERSION = "0.2.43 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -1700,12 +1700,10 @@ class OverlayStyleMixin:
         p.setRenderHint(QPainter.Antialiasing, True)
         st = self._st()
         if st == "transparent":
-            from PySide6.QtGui import QLinearGradient
-            g = QLinearGradient(0, 0, w, 0)
-            g.setColorAt(0.0, QColor(6, 6, 8, 160))   # 0.2.42: transparenter (war 200/135)
-            g.setColorAt(1.0, QColor(6, 6, 8, 95))
-            p.setPen(Qt.NoPen); p.setBrush(QBrush(g))
-            p.drawRect(QRectF(0, 0, w, h))
+            # 0.2.43: Nutzerwunsch - im transparenten Design GAR KEIN Hintergrund
+            # (weder Verlauf noch Flaeche). Text bleibt ueber dem Spiel lesbar,
+            # die Strecke scheint voll durch. 'dark'/'light' zeichnen wie bisher.
+            p.setPen(Qt.NoPen); p.setBrush(Qt.NoBrush)
         else:
             p.setPen(QPen(self._border(), 1)); p.setBrush(self._bg())
             p.drawRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0))
