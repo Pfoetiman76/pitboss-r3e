@@ -936,6 +936,7 @@ class R3EReader:
             tc_on=_na_int(d.aid_settings.tc, 0) >= 1,
             esp_on=_na_int(d.aid_settings.esp, 0) >= 1,
             track_length_m=_pos(d.layout_length),          # 0.2.9: layout_length aus dem Spiel
+            layout_id=_na_int(d.layout_id, 0),              # 0.2.38: Layout-ID (echte Kurvennamen via corner_db)
             sector_bounds_m=self._sector_bounds_m(d),      # 0.2.9: offizielle Sektorgrenzen in m
         )
         return self.Sample(**kw)
@@ -954,6 +955,7 @@ def make_demo_shared(n_cars: int = 4) -> "R3EShared":
     d.track_name = (c_ubyte * 64)(*b"Nuerburgring")
     d.layout_name = (c_ubyte * 64)(*b"Grand Prix")
     d.layout_length = 5148.0
+    d.layout_id = 1691  # 0.2.38: Nuerburgring-GP-Layout-ID fuer den Selftest
     # 0.2.9: offizielle Sektorgrenzen als Start-Faktoren (S2 ab 35 %, S3 ab 68 %)
     d.sector_start_factors.sector1 = 0.0
     d.sector_start_factors.sector2 = 0.35
@@ -1059,6 +1061,7 @@ def _selftest() -> int:
           and abs(s.sector_bounds_m[0] - 1801.8) < 1.0 and abs(s.sector_bounds_m[1] - 3500.6) < 1.0, s.sector_bounds_m)
     check("Streckenlaenge aus Spiel", abs(getattr(s, "track_length_m", 0.0) - 5148.0) < 0.5, s.track_length_m)
     check("S2 kumulativ", abs(s.last_sector2_s - 79.4) < 1e-4, s.last_sector2_s)
+    check("Layout-ID aus Spiel", getattr(s, "layout_id", 0) == 1691, s.layout_id)
     check("Session Rennen", s.session_type == 10 and s.game_phase == 5)
     check("Restzeit", abs(s.session_remaining_s - 1500.0) < 1e-3 and abs(s.session_current_et - 300.0) < 1e-3)
     check("Auto-/Klassenname", s.vehicle_name.startswith("Aquila") or s.vehicle_name == "R3E Car 252", s.vehicle_name)
