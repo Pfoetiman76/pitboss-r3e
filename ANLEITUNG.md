@@ -19,16 +19,7 @@ PitBoss R3E ist die Telemetrie- und Coaching-Software für RaceRoom Racing Exper
 
 ## 2. Erster Start und Ordnerstruktur
 
-Beim ersten Start fragt PitBoss nach einem **Start-Modus** (kann gemerkt werden):
-
-| Modus | Bedeutung |
-|---|---|
-| Aufzeichnung | Live-Ansicht mit Recorder – der Standard zum Fahren und Auswerten |
-| Overlays | Reifen- und Monitor-Overlay sofort geöffnet |
-| Coach | Coach-Ansicht mit Monitor-Overlay |
-| Alles | Volles Dashboard mit allen Ansichten |
-
-Alle Nutzerdaten liegen an einem Ort: **`Dokumente\PitBoss R3E`**
+PitBoss startet direkt mit dem Dashboard - alle Ansichten sind über die Reiter oben erreichbar.
 
 | Ordner | Inhalt |
 |---|---|
