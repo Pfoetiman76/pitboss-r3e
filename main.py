@@ -32,7 +32,7 @@ from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.3.0.3 Beta"
+APP_VERSION = "0.3.1.0 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -1566,6 +1566,32 @@ def _remember_overlay_state(widget):
         pass
 
 
+def _save_open_overlays(widgets):
+    """0.3.1.0: Beim Schliessen der App merken, welche Overlays offen waren
+    und wo sie standen. Groesse/Skalierung/Deckkraft werden bereits laufend
+    ueber _remember_overlay_size/_remember_overlay_state gespeichert."""
+    global _OVERLAY_SIZES
+    try:
+        if _OVERLAY_SIZES is None:
+            _OVERLAY_SIZES = _load_overlay_sizes()
+        names = []
+        for w in widgets:
+            try:
+                if not w.isVisible():
+                    continue
+                names.append(type(w).__name__)
+                _OVERLAY_SIZES[type(w).__name__ + ":pos"] = [int(w.x()), int(w.y())]
+            except Exception:
+                pass
+        _OVERLAY_SIZES["open"] = names
+        import json
+        EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        with open(OVERLAY_SIZES_PATH, "w", encoding="utf-8") as f:
+            json.dump(_OVERLAY_SIZES, f, indent=2)
+    except Exception:
+        pass
+
+
 def _restore_overlay_size(widget):
     global _OVERLAY_SIZES
     if getattr(widget, "_size_restored", False):
@@ -1589,11 +1615,33 @@ def _restore_overlay_size(widget):
         widget.ov_scale = sc
         if sc != 1.0:
             widget._ov_base_size = (max(10.0, widget.width() / sc), max(10.0, widget.height() / sc))
+        # 0.3.1.0: Deckkraft-Standard fuer neue Overlays = 0 % (komplett
+        # transparenter Hintergrund); gespeicherte Werte haben Vorrang.
         op = _OVERLAY_SIZES.get(type(widget).__name__ + ":opacity")
         try:
-            widget.ov_opacity = max(0.15, min(1.0, float(op))) if op else 1.0
+            widget.ov_opacity = max(0.0, min(1.0, float(op))) if op is not None else 0.0
         except Exception:
-            widget.ov_opacity = 1.0
+            widget.ov_opacity = 0.0
+        # 0.3.1.0: Das Reifen-Overlay hat eine eigene Skalierungs-Logik
+        # (ui_scale steuert die Reifen-Bausteine mit) - den gemerkten Faktor
+        # dort anwenden statt des generischen resize oben.
+        if type(widget).__name__ == "TireOverlayWindow":
+            try:
+                widget.set_ui_scale(sc)
+            except Exception:
+                pass
+        # 0.3.1.0: gemerkte Fensterposition wiederherstellen (mit Plausibilitaets-
+        # Pruefung gegen den Bildschirm, damit ein Overlay nicht ausserhalb der
+        # sichtbaren Flaeche landet, wenn z. B. ein zweiter Monitor fehlt).
+        pos = _OVERLAY_SIZES.get(type(widget).__name__ + ":pos")
+        if pos and len(pos) == 2:
+            try:
+                screen = QApplication.primaryScreen().availableGeometry()
+                x = max(screen.left(), min(int(pos[0]), screen.right() - widget.width()))
+                y = max(screen.top(), min(int(pos[1]), screen.bottom() - 40))
+                widget.move(x, y)
+            except Exception:
+                pass
         # 0.2.47: Die gemerkte Deckkraft wirkt im Hintergrund (Alpha), nicht mehr
         # als Fenster-Deckkraft - ein setWindowOpacity entfaellt hier. Beim naechsten
         # paintEvent fliesst ov_opacity automatisch in _bg()/_panel() ein.
@@ -1663,14 +1711,15 @@ class OverlayStyleMixin:
         return getattr(self, "overlay_style", "transparent")
 
     def _ovop(self):
-        """0.2.47: Deckkraft-Faktor NUR fuer Hintergrund-Flaechen. Die Schrift und
-        die Graphiken bleiben immer voll deckend und lesbar. Das Reifen-Overlay
-        blendet weiterhin das komplette Fenster ab (eigene setWindowOpacity-Logik)
-        und wird hier nicht zusaetzlich abgeschwaecht."""
+        """0.2.47/0.3.1.0: Deckkraft-Faktor NUR fuer Hintergrund-Flaechen. Die Schrift und
+        die Graphiken bleiben immer voll deckend und lesbar. Seit 0.3.1.0 gilt das
+        auch fuer das Reifen-Overlay (kein setWindowOpacity mehr), und 0.0 ist
+        erlaubt: komplett durchscheinender Hintergrund als Standard."""
         try:
-            if type(self).__name__ == "TireOverlayWindow":
-                return 1.0
-            return max(0.15, min(1.0, float(getattr(self, "ov_opacity", 1.0))))
+            # 0.3.1.0: Default 0.0 (komplett transparent) fuer neue Overlays;
+            # gespeicherte Werte stellen ueber _restore_overlay_size die
+            # zuletzt gewaehlte Deckkraft wieder her.
+            return max(0.0, min(1.0, float(getattr(self, "ov_opacity", 0.0))))
         except Exception:
             return 1.0
 
@@ -1694,7 +1743,10 @@ class OverlayStyleMixin:
         return QColor("#16161a") if self._st() == "light" else QColor("#ffffff")
 
     def _muted(self):
-        return QColor("#666671") if self._st() == "light" else QColor("#b6b8c0")
+        # 0.3.1.0: Sekundaer-Text nicht mehr grau, sondern weiss (Nutzer-Wunsch);
+        # Akzent-/Statusfarben bleiben unveraendert. Der helle Stil behaltet sein
+        # dunkles Grau, weiss waere auf weissem Grund unlesbar.
+        return QColor("#666671") if self._st() == "light" else QColor("#ffffff")
 
     def _border(self):
         return QColor("#d4d4da") if self._st() == "light" else QColor("#2c2c33")
@@ -1766,7 +1818,10 @@ class OverlayStyleMixin:
         # 0.2.47: KEIN setWindowOpacity mehr - das blendete bisher Schrift und
         # Grafik mit ab. Die Deckkraft wirkt jetzt nur noch auf den Hintergrund
         # (siehe _bg/_panel/_paint_frame); der Inhalt bleibt voll lesbar.
-        self.ov_opacity = max(0.15, min(1.0, float(op)))
+        # 0.3.1.0: 0 % ist erlaubt (komplett durchscheinender Hintergrund)
+        # und Werte liegen auf einem 5-%-Raster.
+        v = max(0.0, min(1.0, float(op)))
+        self.ov_opacity = round(v / 0.05) * 0.05
         try:
             _remember_overlay_state(self)
         except Exception:
@@ -1793,10 +1848,10 @@ class OverlayStyleMixin:
         if d == 0:
             return
         if event.modifiers() & Qt.AltModifier:
-            # 0.2.44/0.2.47: Alt+Mausrad regelt die Deckkraft in 5-%-Schritten.
-            # Seit 0.2.47 steuert sie die Staerke des Hintergrunds; die Schrift
-            # bleibt immer voll deckend.
-            self.set_ui_opacity(float(getattr(self, "ov_opacity", 1.0) or 1.0) + (0.05 if d > 0 else -0.05))
+            # 0.2.44/0.2.47/0.3.1.0: Alt+Mausrad regelt die Deckkraft in 5-%-Schritten
+            # (0 bis 100 %). Seit 0.2.47 steuert sie die Staerke des Hintergrunds;
+            # die Schrift bleibt immer voll deckend.
+            self.set_ui_opacity(float(getattr(self, "ov_opacity", 1.0)) + (0.05 if d > 0 else -0.05))
         else:
             self.set_ui_scale(float(getattr(self, "ov_scale", 1.0) or 1.0) + (0.1 if d > 0 else -0.1))
         event.accept()
@@ -1811,9 +1866,13 @@ class OverlayStyleMixin:
         val = QLabel()
         lay.addWidget(val)
         sl = QSlider(Qt.Horizontal)
-        sl.setRange(15, 100)
-        sl.setValue(int(round(float(getattr(self, "ov_opacity", 1.0) or 1.0) * 100)))
+        # 0.3.1.0: 0 bis 100 % in 5-%-Schritten (Standard: komplett transparent).
+        sl.setRange(0, 100)
+        sl.setSingleStep(5)
+        sl.setPageStep(25)
+        sl.setValue(int(round(float(getattr(self, "ov_opacity", 1.0)) * 100)))
         def _apply(v):
+            v = int(round(v / 5.0)) * 5  # 0.3.1.0: auf 5-%-Raster rasten
             val.setText(f"{v} %")
             self.set_ui_opacity(float(v) / 100.0)
         sl.valueChanged.connect(_apply)
@@ -1834,9 +1893,10 @@ class OverlayStyleMixin:
         for label, val in [("75 %", 0.75), ("100 %", 1.0), ("125 %", 1.25), ("150 %", 1.5), ("175 %", 1.75), ("200 %", 2.0)]:
             sm.addAction(label, lambda v=val: self.set_ui_scale(v))
         om = menu.addMenu("Deckkraft")
-        # 0.2.44: 10-%-Stufen plus feiner Regler - kombinierbar mit dem
-        # Hintergrundlosen transparenten Design aus 0.2.43.
-        for label, val in [("20 %", 0.2), ("40 %", 0.4), ("60 %", 0.6), ("80 %", 0.8), ("100 %", 1.0)]:
+        # 0.3.1.0: Stufen 0/25/50/75/100 % plus feiner Regler im 5-%-Raster -
+        # 0 % = komplett durchscheinender Hintergrund (Standard), die Schrift
+        # bleibt in jeder Stufe voll lesbar.
+        for label, val in [("0 %", 0.0), ("25 %", 0.25), ("50 %", 0.5), ("75 %", 0.75), ("100 %", 1.0)]:
             om.addAction(label, lambda v=val: self.set_ui_opacity(v))
         om.addSeparator()
         om.addAction("Regler … (Alt+Mausrad: 5-%-Schritte)", self._opacity_dialog)
@@ -2840,7 +2900,7 @@ class OverlayWindow(OverlayStyleMixin, QWidget):
     def _restyle(self):
         light = self._st() == "light"
         c = "#16161a" if light else "#f1f1f3"
-        key = "#666671" if light else "#8f8f99"
+        key = "#666671" if light else "#ffffff"  # 0.3.1.0: Beschriftungen weiss statt grau
         self.setStyleSheet(
             "QWidget { background:transparent; color:%s; font-size:12px; }"
             "QLabel { color:%s; background:transparent; }"
@@ -3142,7 +3202,6 @@ class TireOverlayWindow(OverlayStyleMixin, QWidget):
         self.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint | Qt.WindowDoesNotAcceptFocus)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)  # Overlays duerfen RaceRoom nie den Fokus nehmen
         self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setWindowOpacity(1.0)
         self.resize(410, 390)
         self.setMinimumSize(400, 380)
         self._drag_pos = None
@@ -3177,12 +3236,14 @@ class TireOverlayWindow(OverlayStyleMixin, QWidget):
         self.installEventFilter(self)
         # VR-Tauglichkeit: Skalierung + Deckkraft. Trend-Basiswerte pro Reifen.
         self.ui_scale = 1.0
-        self.ui_opacity = 1.0
         self._wear_start = {}
         self.set_ui_scale(0.975)  # 0.1.2: ein Viertel kleiner als bisher (1.3)
 
     def set_ui_scale(self, scale):
         self.ui_scale = max(0.7, min(2.2, float(scale) or 1.0))
+        # 0.3.1.0: ov_scale spiegeln, damit der gemerkte Faktor ueber die
+        # gemeinsame overlay_sizes.json wiederhergestellt werden kann.
+        self.ov_scale = self.ui_scale
         for wdg in self.tire_widgets.values():
             wdg.set_scale(self.ui_scale)
         self.grid.setHorizontalSpacing(int(8 * self.ui_scale))
@@ -3192,14 +3253,23 @@ class TireOverlayWindow(OverlayStyleMixin, QWidget):
         self.update()
 
     def set_ui_opacity(self, op):
-        self.ui_opacity = max(0.25, min(1.0, float(op)))
-        self.setWindowOpacity(self.ui_opacity)
+        # 0.3.1.0: wie bei allen anderen Overlays - die Deckkraft blendet nur
+        # den Hintergrund ab (Alpha in _bg/_paint_frame), nicht mehr das
+        # komplette Fenster. Die Reifen-Zahlen bleiben immer voll lesbar,
+        # 0 % ist erlaubt (komplett durchscheinender Hintergrund).
+        v = max(0.0, min(1.0, float(op)))
+        self.ov_opacity = round(v / 0.05) * 0.05
+        try:
+            _remember_overlay_state(self)
+        except Exception:
+            pass
+        self.update()
 
     def wheelEvent(self, event):
         d = event.angleDelta().y()
         if d != 0:
-            if event.modifiers() & Qt.AltModifier:  # 0.2.44: Alt+Mausrad = Deckkraft
-                self.set_ui_opacity(getattr(self, "ui_opacity", 1.0) + (0.05 if d > 0 else -0.05))
+            if event.modifiers() & Qt.AltModifier:  # 0.3.1.0: Alt+Mausrad = Deckkraft 0-100 % in 5-%-Schritten
+                self.set_ui_opacity(float(getattr(self, "ov_opacity", 1.0)) + (0.05 if d > 0 else -0.05))
             else:
                 self.set_ui_scale(self.ui_scale + (0.1 if d > 0 else -0.1))
             event.accept()
@@ -3211,7 +3281,9 @@ class TireOverlayWindow(OverlayStyleMixin, QWidget):
         for label, val in [("75 %", 0.75), ("100 %", 1.0), ("125 %", 1.25), ("150 %", 1.5), ("175 %", 1.75), ("200 %", 2.0)]:
             sm.addAction(label, lambda v=val: self.set_ui_scale(v))
         om = menu.addMenu("Deckkraft")
-        for label, val in [("40 %", 0.4), ("60 %", 0.6), ("75 %", 0.75), ("90 %", 0.9), ("100 %", 1.0)]:
+        # 0.3.1.0: Stufen 0/25/50/75/100 % wie bei allen Overlays; 0 % =
+        # komplett durchscheinender Hintergrund, Reifenwerte bleiben lesbar.
+        for label, val in [("0 %", 0.0), ("25 %", 0.25), ("50 %", 0.5), ("75 %", 0.75), ("100 %", 1.0)]:
             om.addAction(label, lambda v=val: self.set_ui_opacity(v))
         om.addSeparator()
         om.addAction("Regler … (Alt+Mausrad: 5-%-Schritte)", OverlayStyleMixin._opacity_dialog.__get__(self, TireOverlayWindow))
@@ -5776,8 +5848,50 @@ class Main(QMainWindow):
         self.setup_windows_global_hotkeys()
         self.refresh_dashboard()
         self._tag_plain_containers()  # 0.2.2
+        # 0.3.1.0: Beim letzten Schliessen offene Overlays automatisch wieder
+        # oeffnen (Position/Groesse/Skalierung/Deckkraft stellt jedes Overlay
+        # selbst aus overlay_sizes.json wieder her).
+        QTimer.singleShot(0, self._restore_overlay_session)
 
 
+
+    def _restore_overlay_session(self):
+        """0.3.1.0: Beim letzten App-Schliessen offene Overlays automatisch
+        wieder oeffnen. Position/Groesse/Skalierung/Deckkraft stellt jedes
+        Overlay selbst wieder her (siehe _restore_overlay_size)."""
+        try:
+            d = _load_overlay_sizes()
+            names = d.get("open")
+            if not isinstance(names, list):
+                return
+            mapping = {
+                "OverlayWindow": self.toggle_overlay,
+                "TireOverlayWindow": self.toggle_tire_overlay,
+                "PedalOverlayWindow": self.toggle_pedal_overlay,
+                "LimitOverlayWindow": self.toggle_limit_overlay,
+                "BrakeTempOverlayWindow": self.toggle_brake_overlay,
+                "FuelOverlayWindow": self.toggle_fuel_overlay,
+                "FFBOverlayWindow": self.toggle_ffb_overlay,
+                "PitOverlayWindow": self.toggle_pit_overlay,
+                "DeltaOverlayWindow": self.toggle_delta_overlay,
+                "LapTimeOverlayWindow": self.toggle_laptime_overlay,
+                "DamageOverlayWindow": self.toggle_damage_overlay,
+                "FlagOverlayWindow": self.toggle_flag_overlay,
+                "LapGraphOverlayWindow": self.toggle_lapgraph_overlay,
+                "OvertakeOverlayWindow": self.toggle_overtake_overlay,
+                "BlindSpotOverlayWindow": self.toggle_blindspot_overlay,
+                "CornerNameOverlayWindow": self.toggle_corner_name_overlay,
+            }
+            for n in names:
+                fn = mapping.get(n) if isinstance(n, str) else None
+                if fn is None:
+                    continue
+                try:
+                    fn()
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def load_last_active_profile_name(self) -> str:
         """0.4.5.3: zuletzt aktives Fahrer-/Hardwareprofil merken."""
@@ -10902,6 +11016,13 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 pass
         if getattr(self, "live_log_enabled", False):
             self.stop_live_log()
+        # 0.3.1.0: Overlay-Sitzung sichern - welche Overlays offen sind und wo
+        # sie stehen (Groesse/Skalierung/Deckkraft werden bereits laufend in
+        # overlay_sizes.json gemerkt, siehe _remember_overlay_size/_state).
+        try:
+            _save_open_overlays(self.all_overlay_windows())
+        except Exception:
+            pass
         # 0.2.19: Alle Overlay-Fenster schliessen. Die Overlays sind rahmenlose
         # Qt.Window-Fenster ohne Parent - sie hielten den Prozess am Leben und
         # das Reifen-Overlay blieb nach dem Beenden des Hauptfensters stehen
