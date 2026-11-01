@@ -32,7 +32,7 @@ from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.3.0.1 Beta"
+APP_VERSION = "0.3.0.2 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -5189,7 +5189,10 @@ class Main(QMainWindow):
         top_l.addSpacing(12)
         self.conn_pill = QLabel("WARTET AUF RACEROOM")
         self.conn_pill.setObjectName("connPill"); self.conn_pill.setProperty("state", "off")
-        top_l.addWidget(self.conn_pill)
+        # 0.3.0.2: Nutzerwunsch - Status in der Kopfleiste entfaellt. Das Widget
+        # bleibt als internes Datenziel fuer _update_conn_pill() erhalten, wird
+        # aber nicht mehr ins Layout gesetzt. Der Verbindungsstatus steht in der
+        # Kachel "Verbindung" und in der Statusleiste unten.
         top_l.addStretch(1)
         outer.addWidget(top)
 
@@ -5224,7 +5227,10 @@ class Main(QMainWindow):
 
         from PySide6.QtWidgets import QToolButton, QMenu
         top_l.addWidget(self.btn_record)
-        top_l.addWidget(self.btn_report)
+        # 0.3.0.2: Alle grauen Kopfleisten-Buttons (Report, Overlays, Coach, Mehr,
+        # Einstellungen) sind in EINEM Menue-Button gebuendelt. Die einzelnen
+        # QToolButtons bleiben als Menue-Traeger bestehen, sind aber nicht mehr
+        # einzeln in der Leiste sichtbar.
         self.btn_overlays = QToolButton()
         self.btn_overlays.setText("Overlays  ▾")
         self.btn_overlays.setPopupMode(QToolButton.InstantPopup)
@@ -5262,7 +5268,6 @@ class Main(QMainWindow):
             _a.triggered.connect(lambda _c=False, k=_key: self.set_overlay_style(k))
             self.overlay_style_actions[_key] = _a
         self.btn_overlays.setMenu(_ov)
-        top_l.addWidget(self.btn_overlays)
 
         self.btn_coach = QToolButton()
         self.btn_coach.setText("Coach  ▾")
@@ -5288,7 +5293,6 @@ class Main(QMainWindow):
         _coach.addSeparator()
         _coach.addAction("Ansage-Vorlauf …", self.set_coach_lead_all)
         self.btn_coach.setMenu(_coach)
-        top_l.addWidget(self.btn_coach)
 
         self.btn_more = QToolButton()
         self.btn_more.setText("Mehr  ▾")
@@ -5317,12 +5321,20 @@ class Main(QMainWindow):
         _more.addAction("Export-Ordner öffnen", self.btn_export.click)
         _more.addAction("Aufzeichnung löschen", self.btn_clear.click)
         self.btn_more.setMenu(_more)
-        top_l.addWidget(self.btn_more)
 
-        self.btn_settings = QToolButton()
-        self.btn_settings.setText("Einstellungen")
-        self.btn_settings.clicked.connect(self.open_settings_window)
-        top_l.addWidget(self.btn_settings)
+        # 0.3.0.2: EIN Menue-Button statt fuenf einzelner Kopfleisten-Buttons.
+        self.btn_menu = QToolButton()
+        self.btn_menu.setText("Men\u00fc  \u25be")
+        self.btn_menu.setPopupMode(QToolButton.InstantPopup)
+        _menu = QMenu(self.btn_menu)
+        _menu.addAction("Report speichern", self.btn_report.click)
+        _menu.addMenu(_ov)
+        _menu.addMenu(_coach)
+        _menu.addMenu(_more)
+        _menu.addSeparator()
+        _menu.addAction("Einstellungen", self.open_settings_window)
+        self.btn_menu.setMenu(_menu)
+        top_l.addWidget(self.btn_menu)
 
         # ---- 0.2.2: Tab-Navigation unter der Kopfleiste im Stil des RaceRoom-Menues
         #      (aktiver Reiter weiss, die anderen dunkelgrau). Wird nach dem Anlegen der Tabs befuellt.
@@ -5387,6 +5399,9 @@ class Main(QMainWindow):
         # Kacheln und der Kopfleiste), Kacheln im Ein-Zeilen-Stil.
         self.dash_cards = {}
         card_grid = QGridLayout(); card_grid.setSpacing(6)
+        # 0.3.0.2: Nutzerwunsch - Kacheln UNTEREINANDER, jede ueber die volle
+        # Breite (statt 3-Spalten-Raster). Wirkt wie eine Statusliste und
+        # laengere Werte passen ohne Umbruch.
         for i, key in enumerate(["Verbindung", "Recording", "Runden", "Referenz", "Reifen", "Coach-Fokus"]):
             frame = QFrame(); frame.setObjectName("dashCard")
             frame.setFixedHeight(34)
@@ -5396,12 +5411,11 @@ class Main(QMainWindow):
             val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             fl.addWidget(lab); fl.addStretch(1); fl.addWidget(val)
             self.dash_cards[key] = val
-            card_grid.addWidget(frame, i // 3, i % 3)
-        for c in range(3):
-            card_grid.setColumnStretch(c, 1)
+            card_grid.addWidget(frame, i, 0)
+        card_grid.setColumnStretch(0, 1)
         # 0.3.0.1: Wettbewerbs-Kachel einzeilig (slim)
         card_grid.addWidget(LinkCard("WETTBEWERBE & RANGLISTEN", "RACEROOM COMPETITIONS IM BROWSER \u00d6FFNEN",
-                                     RACEROOM_COMPETITIONS_URL, slim=True), 2, 0, 1, 3)
+                                     RACEROOM_COMPETITIONS_URL, slim=True), 6, 0)
         dash_layout.addLayout(card_grid)
         title_coach = QLabel("AKTUELLER COACH-FOKUS"); title_coach.setObjectName("sectionTitle")
         dash_layout.addWidget(title_coach)
