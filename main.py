@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QApplication, QFileDialog, QGroupBox, QGridLayout, QHBoxLayout, QLabel,
     QLineEdit, QMainWindow, QMessageBox, QPushButton, QTableWidget, QComboBox,
     QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget, QTabWidget, QFrame,
-    QCheckBox, QSpinBox, QProgressDialog, QSizeGrip, QDialog, QDialogButtonBox
+    QCheckBox, QSpinBox, QProgressDialog, QSizeGrip, QDialog, QDialogButtonBox, QScrollArea
 )
 
 import ctypes
@@ -32,7 +32,7 @@ from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.2.47 Beta"
+APP_VERSION = "0.2.48 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -5141,7 +5141,23 @@ class Main(QMainWindow):
         self.timer.setInterval(100)  # 10 Hz live recorder
         self.timer.timeout.connect(self.capture_tick)
 
-        root = QWidget(); self.setCentralWidget(root)
+        # 0.2.48: Fenster beliebig verkleinerbar. Vorher erzwangen Kopfleiste und
+        # Tab-Layouts eine grosse Mindestgroesse. Der Inhalt liegt jetzt in
+        # einer Scroll-Flaeche: Laesst sich das Fenster nicht weiter vergroessern,
+        # wachsen die Scrollbalken mit, statt das Fenster zu blockieren.
+        self.setMinimumSize(160, 120)
+
+        root = QWidget()
+        scroll = QScrollArea()
+        scroll.setObjectName("rootScroll")
+        scroll.setWidget(root)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        try:
+            scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        except Exception:
+            pass
+        self.setCentralWidget(scroll)
         outer = QVBoxLayout(root); outer.setContentsMargins(0, 0, 0, 0); outer.setSpacing(0)
         self._root = root
         root.setObjectName("rootBg")
