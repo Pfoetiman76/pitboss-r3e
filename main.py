@@ -32,7 +32,7 @@ from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.3.0.2 Beta"
+APP_VERSION = "0.3.0.3 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -5328,6 +5328,12 @@ class Main(QMainWindow):
         self.btn_menu.setPopupMode(QToolButton.InstantPopup)
         _menu = QMenu(self.btn_menu)
         _menu.addAction("Report speichern", self.btn_report.click)
+        # 0.3.0.3: Ein per addMenu() eingebundenes QMenu zeigt seinen Titel,
+        # nicht den Text des (unsichtbaren) QToolButton-Traegers. Ohne setTitle
+        # haengen die Untermenues unbeschriftet im Menue (Nutzer-Report).
+        _ov.setTitle("Overlays")
+        _coach.setTitle("Coach")
+        _more.setTitle("Mehr")
         _menu.addMenu(_ov)
         _menu.addMenu(_coach)
         _menu.addMenu(_more)
