@@ -32,7 +32,7 @@ from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.3.1.3 Beta"
+APP_VERSION = "0.3.1.4 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -2160,20 +2160,31 @@ class GapLineOverlayWindow(OverlayStyleMixin, QWidget):
         col_ahead = QColor("#c62828") if light else QColor("#f85149")
         col_behind = QColor("#1a7f37") if light else QColor("#3fb950")
 
-        def _txt(rect, flags, text, color):
+        def _txt(rect, flags, text, color, font):
             # 0.3.1.3: dunkler Schatten hinter der farbigen Schrift - das gruen
             # des H war auf gruenem Streckenhintergrund unsichtbar (Nutzer-Report).
+            p.setFont(font)
             p.setPen(QColor(0, 0, 0, 200))
             p.drawText(rect.translated(1.5, 1.5), flags, text)
             p.setPen(color)
             p.drawText(rect, flags, text)
 
-        # 0.3.1.3: Pfeil deutlich groesser (Nutzer-Wunsch) - ueber die volle
-        # Breite links-/rechtsbuendig zeichnen, damit nichts abgeschnitten wird.
-        _txt(QRectF(12, 0, w - 24, h), Qt.AlignVCenter | Qt.AlignLeft, "V  " + _fmt(ahead, "-"), col_ahead)
-        _txt(QRectF(12, 0, w - 24, h), Qt.AlignVCenter | Qt.AlignRight, "H  " + _fmt(behind, "+"), col_behind)
-        fa = QFont(); fa.setPointSizeF(max(12.0, h * 0.85)); fa.setBold(True); p.setFont(fa)
-        _txt(QRectF(w * 0.42, 0, w * 0.16, h), Qt.AlignCenter, "\u2194", QColor("#ffffff") if not light else QColor("#16161a"))
+        # 0.3.1.4: Feste Zonen, nichts ueberlappt mehr (Nutzer-Report): links
+        # der V-Wert, in der Mitte der Pfeil, rechts der H-Wert. Jeder Text
+        # wird per _fit_font so gross wie moeglich INNERHALB seiner Zone
+        # gesetzt - der grosse Pfeil steht strikt zwischen den Werten.
+        v_txt = "V  " + _fmt(ahead, "-")
+        h_txt = "H  " + _fmt(behind, "+")
+        zone = max(50.0, w * 0.42)   # Breite je Wertzone (links/rechts)
+        mid = max(18.0, w * 0.16)    # Breite der Pfeilzone in der Mitte
+        zw = zone - 10
+        f_v = _fit_font(v_txt, zw, h, 16.0)
+        f_h = _fit_font(h_txt, zw, h, 16.0)
+        f_a = _fit_font("\u2194", mid, h * 1.15, 30.0)
+        _txt(QRectF(8, 0, zw, h), Qt.AlignVCenter | Qt.AlignLeft, v_txt, col_ahead, f_v)
+        _txt(QRectF(w - 8 - zw, 0, zw, h), Qt.AlignVCenter | Qt.AlignRight, h_txt, col_behind, f_h)
+        _txt(QRectF((w - mid) / 2.0, 0, mid, h), Qt.AlignCenter, "\u2194",
+             QColor("#16161a") if light else QColor("#ffffff"), f_a)
         p.end()
 
 
