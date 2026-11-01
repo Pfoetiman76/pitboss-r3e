@@ -32,7 +32,7 @@ from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.3.1.0 Beta"
+APP_VERSION = "0.3.1.1 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -2087,6 +2087,62 @@ class DeltaOverlayWindow(OverlayStyleMixin, QWidget):
         gap_row(102, "auf F\u00fchrenden", gap_leader, int(getattr(s, "laps_behind_leader", 0) or 0), QColor("#58a6ff"))
         fn = QFont(); fn.setPointSize(7); p.setFont(fn); p.setPen(self._muted())
         p.drawText(QRectF(0, h - 16, w, 12), Qt.AlignCenter, "Distanz = Abstand x eigenes Tempo")
+        p.end()
+
+
+class GapLineOverlayWindow(OverlayStyleMixin, QWidget):
+    """0.3.1.1: Abstand nach vorn/hinten in EINER Zeile im Format
+    'V -1,234  <->  H +0,567'. Label vor dem Wert (Nutzer-Wunsch), vorn rot,
+    hinten gruen, Werte in Sekunden mit deutschem Komma und drei
+    Nachkommastellen. Fehlt ein Gegner (vorn oder hinten), steht ein Strich.
+    Deckkraft/Skalierung/Position und Sitzungs-Speicherung wie bei allen
+    Overlays."""
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("R3E Abstand einzeilig Overlay")
+        self.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint | Qt.WindowDoesNotAcceptFocus)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)  # Overlays duerfen RaceRoom nie den Fokus nehmen
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.resize(300, 44)
+        self.setMinimumSize(240, 36)
+        self._d = None
+        self._drag = None
+
+    def update_from_main(self, main):
+        self._d = getattr(main, "last_live_sample", None) or (main.samples[-1] if getattr(main, "samples", None) else None)
+        self.update()
+
+    def mousePressEvent(self, ev): self._drag_start(ev)
+    def mouseMoveEvent(self, ev): self._drag_move(ev)
+    def mouseReleaseEvent(self, ev): self._drag = None
+
+    def paintEvent(self, _):
+        p = self._begin_paint(); p.setRenderHint(QPainter.Antialiasing, True)
+        w, h = self._lw(), self._lh()
+        self._paint_frame(p, w, h)
+        f = QFont(); f.setPointSizeF(max(8.0, h * 0.40)); f.setBold(True); p.setFont(f)
+        s = self._d
+        if s is None:
+            p.setPen(self._muted())
+            p.drawText(QRectF(0, 0, w, h), Qt.AlignCenter, "warte auf Telemetrie")
+            p.end(); return
+
+        def _fmt(v, sign):
+            # 0.3.1.1: deutsches Komma, drei Nachkommastellen; ohne Gegner Strich.
+            if v is None or v <= 0.001:
+                return "\u2014,\u2014\u2014\u2014"
+            return f"{sign}{abs(float(v)):.3f}".replace(".", ",")
+
+        ahead = float(getattr(s, "gap_ahead_s", 0.0) or 0.0)
+        behind = float(getattr(s, "gap_behind_s", 0.0) or 0.0)
+        # vorn = rot (Auto direkt vor mir), hinten = gruen (Nutzer-Wunsch 0.3.1.1)
+        p.setPen(QColor("#f85149") if self._st() != "light" else QColor("#c62828"))
+        p.drawText(QRectF(12, 0, w * 0.40, h), Qt.AlignVCenter | Qt.AlignLeft, "V  " + _fmt(ahead, "-"))
+        p.setPen(self._muted())
+        p.drawText(QRectF(w * 0.40, 0, w * 0.20, h), Qt.AlignCenter, "\u2194")
+        p.setPen(QColor("#3fb950") if self._st() != "light" else QColor("#1a7f37"))
+        p.drawText(QRectF(w * 0.60, 0, w * 0.40 - 12, h), Qt.AlignVCenter | Qt.AlignRight, "H  " + _fmt(behind, "+"))
         p.end()
 
 
@@ -5168,6 +5224,7 @@ class Main(QMainWindow):
         self.sector_tracker = SectorTracker()  # 0.4.9.0
         self.pit_overlay_window = None       # 0.4.9.1
         self.delta_overlay_window = None
+        self.gapline_overlay_window = None  # 0.3.1.1: Abstand einzeilig (V/H in einer Zeile)
         self.laptime_overlay_window = None
         self.damage_overlay_window = None
         self.overlay_style = self.load_overlay_style()  # 0.4.9.1
@@ -5316,6 +5373,7 @@ class Main(QMainWindow):
         _ov.addAction("Flaggen (auto bei Flagge)", self.toggle_flag_overlay)
         _ov.addAction("Überholalarm (hinten)", self.toggle_overtake_overlay)
         _ov.addAction("Abstand & Distanz", self.toggle_delta_overlay)
+        _ov.addAction("Abstand einzeilig", self.toggle_gapline_overlay)  # 0.3.1.1: 'V -1,234 <-> H +0,567' in einer Zeile
         _ov.addAction("Boxenstopp", self.toggle_pit_overlay)
         _ov.addAction("Fahrzeugschäden", self.toggle_damage_overlay)
         _ov.addAction("Toter Winkel", self.toggle_blindspot_overlay)
@@ -5874,6 +5932,7 @@ class Main(QMainWindow):
                 "FFBOverlayWindow": self.toggle_ffb_overlay,
                 "PitOverlayWindow": self.toggle_pit_overlay,
                 "DeltaOverlayWindow": self.toggle_delta_overlay,
+                "GapLineOverlayWindow": self.toggle_gapline_overlay,
                 "LapTimeOverlayWindow": self.toggle_laptime_overlay,
                 "DamageOverlayWindow": self.toggle_damage_overlay,
                 "FlagOverlayWindow": self.toggle_flag_overlay,
@@ -7182,6 +7241,10 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
     def toggle_delta_overlay(self):
         self._toggle_simple_overlay("delta_overlay_window", DeltaOverlayWindow, "Delta-Overlay")
 
+    def toggle_gapline_overlay(self):
+        # 0.3.1.1: Abstand vorn/hinten in einer Zeile: 'V -1,234 <-> H +0,567'.
+        self._toggle_simple_overlay("gapline_overlay_window", GapLineOverlayWindow, "Abstand einzeilig")
+
     def toggle_laptime_overlay(self):
         self._toggle_simple_overlay("laptime_overlay_window", LapTimeOverlayWindow, "Rundenzeiten-Overlay")
 
@@ -7254,7 +7317,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         for a in ("overlay_window", "tire_overlay_window", "pedal_overlay_window",
                   "limit_overlay_window", "brake_overlay_window",
                   "fuel_overlay_window", "ffb_overlay_window", "pit_overlay_window",
-                  "delta_overlay_window", "laptime_overlay_window", "damage_overlay_window",
+                  "delta_overlay_window", "gapline_overlay_window", "laptime_overlay_window", "damage_overlay_window",
                   "flag_overlay_window", "lapgraph_overlay_window", "overtake_overlay_window",
                   "blindspot_overlay_window",
                   "corner_name_overlay_window"):
@@ -7369,7 +7432,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             self.limit_overlay_window.update_from_main(self)
         for _a in ("brake_overlay_window",
                    "fuel_overlay_window", "ffb_overlay_window",
-                   "pit_overlay_window", "delta_overlay_window",
+                   "pit_overlay_window", "delta_overlay_window", "gapline_overlay_window",
                    "laptime_overlay_window", "damage_overlay_window",
                    "flag_overlay_window", "lapgraph_overlay_window", "overtake_overlay_window",
                    "blindspot_overlay_window"):
