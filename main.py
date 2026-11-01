@@ -32,7 +32,7 @@ from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.3.1.4 Beta"
+APP_VERSION = "0.3.2.0 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -5550,28 +5550,41 @@ class Main(QMainWindow):
         self.btn_overlays.setText("Overlays  ▾")
         self.btn_overlays.setPopupMode(QToolButton.InstantPopup)
         _ov = QMenu(self.btn_overlays)
-        _ov.addAction("Reifen-Overlay", self.toggle_tire_overlay)
-        _ov.addAction("Pedal-Overlay", self.toggle_pedal_overlay)
-        _ov.addAction("Monitor-Overlay", self.toggle_overlay)
+        # 0.3.2.0: Jeder Overlay-Eintrag bekommt einen Haken, sobald das
+        # Overlay offen ist. _sync_overlay_menu_checks() haelt die Haken
+        # aktuell - auch nach der automatischen Sitzungs-Wiederherstellung
+        # und bei Hotkey-Toggles.
+        self._ov_toggle_acts = {}
+
+        def _ov_toggle(label, slot, attr):
+            a = _ov.addAction(label, slot)
+            a.setCheckable(True)
+            self._ov_toggle_acts[attr] = a
+
+        _ov_toggle("Reifen-Overlay", self.toggle_tire_overlay, "tire_overlay_window")
+        _ov_toggle("Pedal-Overlay", self.toggle_pedal_overlay, "pedal_overlay_window")
+        _ov_toggle("Monitor-Overlay", self.toggle_overlay, "overlay_window")
         _ov.addSeparator()
-        _ov.addAction("Rundenzeiten (Delta/Prognose)", self.toggle_laptime_overlay)
-        _ov.addAction("Rundenzeiten-Graph", self.toggle_lapgraph_overlay)
-        _ov.addAction("Flaggen (auto bei Flagge)", self.toggle_flag_overlay)
-        _ov.addAction("Überholalarm (hinten)", self.toggle_overtake_overlay)
-        _ov.addAction("Abstand & Distanz", self.toggle_delta_overlay)
-        _ov.addAction("Abstand einzeilig", self.toggle_gapline_overlay)  # 0.3.1.1: 'V -1,234 <-> H +0,567' in einer Zeile
-        _ov.addAction("Boxenstopp", self.toggle_pit_overlay)
-        _ov.addAction("Fahrzeugschäden", self.toggle_damage_overlay)
-        _ov.addAction("Toter Winkel", self.toggle_blindspot_overlay)
+        _ov_toggle("Rundenzeiten (Delta/Prognose)", self.toggle_laptime_overlay, "laptime_overlay_window")
+        _ov_toggle("Rundenzeiten-Graph", self.toggle_lapgraph_overlay, "lapgraph_overlay_window")
+        self.act_flag_overlay = _ov.addAction("Flaggen (auto bei Flagge)", self.toggle_flag_overlay)
+        self.act_flag_overlay.setCheckable(True)
+        self.act_flag_overlay.setChecked(bool(getattr(self, "flag_overlay_armed", False)))
+        _ov_toggle("Überholalarm (hinten)", self.toggle_overtake_overlay, "overtake_overlay_window")
+        _ov_toggle("Abstand & Distanz", self.toggle_delta_overlay, "delta_overlay_window")
+        _ov_toggle("Abstand einzeilig", self.toggle_gapline_overlay, "gapline_overlay_window")  # 0.3.1.1: 'V -1,234 <-> H +0,567' in einer Zeile
+        _ov_toggle("Boxenstopp", self.toggle_pit_overlay, "pit_overlay_window")
+        _ov_toggle("Fahrzeugschäden", self.toggle_damage_overlay, "damage_overlay_window")
+        _ov_toggle("Toter Winkel", self.toggle_blindspot_overlay, "blindspot_overlay_window")
         self.act_blindspot_flip = _ov.addAction("Toter Winkel: Seiten spiegeln")
         self.act_blindspot_flip.setCheckable(True)
         self.act_blindspot_flip.setChecked(BlindSpotOverlayWindow._load_flip())
         self.act_blindspot_flip.toggled.connect(self.set_blindspot_flip)
-        _ov.addAction("Bremstemperaturen (inkl. Verschleiß-Schätzung)", self.toggle_brake_overlay)
-        _ov.addAction("Kraftstoff", self.toggle_fuel_overlay)
-        _ov.addAction("Kurven-Namen", self.toggle_corner_name_overlay)  # 0.2.41: ins Overlays-Menue verschoben (war unter Mehr)
-        _ov.addAction("Force Feedback", self.toggle_ffb_overlay)
-        _ov.addAction("Limit-Meter", self.toggle_limit_overlay)
+        _ov_toggle("Bremstemperaturen (inkl. Verschleiß-Schätzung)", self.toggle_brake_overlay, "brake_overlay_window")
+        _ov_toggle("Kraftstoff", self.toggle_fuel_overlay, "fuel_overlay_window")
+        _ov_toggle("Kurven-Namen", self.toggle_corner_name_overlay, "corner_name_overlay_window")  # 0.2.41: ins Overlays-Menue verschoben (war unter Mehr)
+        _ov_toggle("Force Feedback", self.toggle_ffb_overlay, "ffb_overlay_window")
+        _ov_toggle("Limit-Meter", self.toggle_limit_overlay, "limit_overlay_window")
         _ov.addSeparator()
         _stylemenu = _ov.addMenu("Design aller Overlays")
         self.overlay_style_actions = {}
@@ -6138,6 +6151,7 @@ class Main(QMainWindow):
                     pass
         except Exception:
             pass
+        self._sync_overlay_menu_checks()  # 0.3.2.0: Haken der wiederhergestellten Overlays setzen
 
     def fuel_calc_basis(self):
         """0.3.1.2/0.3.1.3: Basis fuer den Sprit-Rechner - Ø Verbrauch pro Runde und
@@ -6974,6 +6988,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             self.tire_overlay_window.show()
             self.tire_overlay_window.raise_()
             self.log.append("Reifen-Overlay geöffnet. Separates Fenster neben dem Coach-Overlay.")
+        self._sync_overlay_menu_checks()  # 0.3.2.0
 
     def toggle_corner_name_overlay(self):
         # 0.2.37: Kurvennamen-Overlay (Mehr-Menue oder Hotkey 'Kurven-Namen-Overlay').
@@ -6991,6 +7006,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             self.corner_name_overlay_window.show()
             self.corner_name_overlay_window.raise_()
             self.log.append("Kurven-Namen-Overlay geoeffnet. Naechste Kurve mit Name und Distanz.")
+        self._sync_overlay_menu_checks()  # 0.3.2.0
 
     def open_corner_name_dialog(self):
         # 0.2.37: erkannte Kurven benennen; Namen landen je Strecke in corner_names.json.
@@ -7361,6 +7377,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             self.pedal_overlay_window.show()
             self.pedal_overlay_window.raise_()
             self.log.append("Pedal-Overlay geoeffnet. Zeigt Roh-Input (Gas/Bremse/Kupplung).")
+        self._sync_overlay_menu_checks()  # 0.3.2.0
 
     def _setup_file_logging(self):
         """0.4.8.8: spiegelt alle Log-Zeilen automatisch in eine Datei unter
@@ -7409,6 +7426,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         else:
             win.update_from_main(self); win.show(); win.raise_()
             self.log.append(f"{name} geoeffnet.")
+        self._sync_overlay_menu_checks()  # 0.3.2.0: Haken im Menue nachziehen
 
     def update_sector_times(self, s):
         """0.4.9.0: echte Sektorzeiten des Spiels auswerten (S2 kommt kumuliert)."""
@@ -7581,13 +7599,13 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
     def toggle_flag_overlay(self):
         # 0.5.5.0: schaltet die automatische Flaggen-Anzeige scharf/aus.
         self.flag_overlay_armed = not getattr(self, "flag_overlay_armed", False)
-        if self.flag_overlay_armed:
-            self.log.append("Flaggen-Overlay scharf: erscheint automatisch, sobald das Spiel eine Flagge zeigt.")
+        if self.flag_overlay_armed:            self.log.append("Flaggen-Overlay scharf: erscheint automatisch, sobald das Spiel eine Flagge zeigt.")
         else:
             w = getattr(self, "flag_overlay_window", None)
             if w is not None and w.isVisible():
                 w.hide()
             self.log.append("Flaggen-Overlay aus.")
+        self._sync_overlay_menu_checks()  # 0.3.2.0
 
     def toggle_lapgraph_overlay(self):
         self._toggle_simple_overlay("lapgraph_overlay_window", LapGraphOverlayWindow, "Rundenzeiten-Graph")
@@ -7628,6 +7646,24 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             if w is not None:
                 out.append(w)
         return out
+
+    def _sync_overlay_menu_checks(self):
+        """0.3.2.0: Haken im Overlays-Menue nachziehen - ein Haken markiert
+        jedes aktuell offene Overlay. Wird nach jedem Toggle (Menue, Hotkey,
+        Sitzungs-Wiederherstellung) aufgerufen."""
+        for attr, act in getattr(self, "_ov_toggle_acts", {}).items():
+            try:
+                w = getattr(self, attr, None)
+                act.setChecked(w is not None and w.isVisible())
+            except Exception:
+                pass
+        # Flaggen-Overlay: Haken = scharf geschaltet (erscheint automatisch).
+        act = getattr(self, "act_flag_overlay", None)
+        if act is not None:
+            try:
+                act.setChecked(bool(getattr(self, "flag_overlay_armed", False)))
+            except Exception:
+                pass
 
     def overlay_style_path(self):
         return str(EXPORT_DIR / "overlay_style.txt")
@@ -7705,6 +7741,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             self.limit_overlay_window.show()
             self.limit_overlay_window.raise_()
             self.log.append("Limit-Meter geoeffnet. Grip-Kreis aus mLocalAccel; Doppelklick = Kalibrierung zuruecksetzen. Push eine harte Kurve/Bremsung zum Kalibrieren.")
+        self._sync_overlay_menu_checks()  # 0.3.2.0
 
     def toggle_overlay(self):
         if self.overlay_window is None:
@@ -7723,6 +7760,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             self.overlay_window.show()
             self.overlay_window.raise_()
             self.log.append("Monitor-Overlay geöffnet. Singleton aktiv: nur ein Coach-Overlay; Reifen-Overlay bleibt separat möglich.")
+        self._sync_overlay_menu_checks()  # 0.3.2.0
 
     def refresh_overlay(self):
         if self.overlay_window is not None and self.overlay_window.isVisible():

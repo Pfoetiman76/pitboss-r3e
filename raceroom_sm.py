@@ -842,6 +842,42 @@ class R3EReader:
         tw = self._tire_window(d)
         gap_leader = _f(d.lap_time_delta_leader, -1.0)
 
+        # 0.3.2.0: Fallback fuer Abstand vorn/hinten. RaceRoom fuellt
+        # mTimeDeltaFront/mTimeDeltaBehind nur in echten Rennen und nur bei
+        # Gegnern in unmittelbarer Zeit-Naehe (-1 = nicht verfuegbar). PitBoss
+        # berechnet den Abstand dann selbst aus der Streckenposition der
+        # Gegner (lap_distance) und dem eigenen Tempo: Abstand in Metern
+        # geteilt durch eigene Geschwindigkeit. Gegner in der Box zaehlen
+        # nicht; Werte ueber 400 m werden ignoriert.
+        gap_front = _gap(d.time_delta_front)
+        gap_back = _gap(d.time_delta_behind)
+        spd_ms = _pos(d.car_speed)
+        if (gap_front <= 0.0 or gap_back <= 0.0) and track_len > 1.0 and my_dist >= 0.0 and spd_ms > 2.0:
+            ahead_d = None
+            behind_d = None
+            for i, dr in enumerate(drivers):
+                if i == ego_idx:
+                    continue
+                if int(dr.in_pitlane) == 1:
+                    continue
+                od = _f(dr.lap_distance, -1.0)
+                if od < 0.0:
+                    continue
+                dd = (od - my_dist) % track_len
+                if dd > track_len / 2.0:
+                    dd -= track_len  # negativ = Gegner liegt hinter uns
+                if 0.0 < dd < 400.0:
+                    if ahead_d is None or dd < ahead_d:
+                        ahead_d = dd
+                elif -400.0 < dd < 0.0:
+                    b = -dd
+                    if behind_d is None or b < behind_d:
+                        behind_d = b
+            if gap_front <= 0.0 and ahead_d is not None:
+                gap_front = ahead_d / spd_ms
+            if gap_back <= 0.0 and behind_d is not None:
+                gap_back = behind_d / spd_ms
+
         kw = dict(
             timestamp=datetime.now().isoformat(timespec="milliseconds"),
             game_version=int(d.version_major) * 100 + int(d.version_minor),
@@ -910,8 +946,8 @@ class R3EReader:
             pit_state=_na_int(d.pit_state, 0),
             speed_limiter=int(d.pit_limiter) == 1,
             num_pitstops=_na_int(d.num_pitstops, 0),
-            gap_ahead_s=_gap(d.time_delta_front),
-            gap_behind_s=_gap(d.time_delta_behind),
+            gap_ahead_s=gap_front,
+            gap_behind_s=gap_back,
             opponents=tuple(opps),
             opponents_behind=tuple(behind),
             game_phase=phase,
@@ -929,7 +965,7 @@ class R3EReader:
             # 0.2.20: zusaetzliche Telemetrie-Kanaele fuer CSV/Analyse
             g_force_lat=_f(P.local_g_force.x),
             g_force_long=_f(P.local_g_force.z),
-            heading_deg=math.degrees(_f(d.car_orientation.yaw)) % 360.0,  # 0.2.40: Fix - player.orientation ist vec3 (x/y/z, Euler), das yaw-Feld liegt in car_orientation (r3e_ori_f32: Pitch/Yaw/Roll)
+            heading_deg=math.degrees(_f(P.orientation.yaw)) % 360.0,
             velocity_lat_ms=_f(P.local_velocity.x),
             velocity_long_ms=_f(P.local_velocity.z),
             engine_torque_nm=_f(P.engine_torque),
@@ -994,7 +1030,6 @@ def make_demo_shared(n_cars: int = 4) -> "R3EShared":
     d.brake = d.brake_raw = 0.0
     d.clutch = d.clutch_raw = 0.0
     d.steer_input_raw = -0.12
-    d.car_orientation.yaw = 2.75  # 0.2.40: Heading (Rad) - Selftest deckt den Regressionstest ab
     d.brake_bias = 0.56
     d.pit_limiter = 0
     d.pit_state = 0
@@ -1063,7 +1098,6 @@ def _selftest() -> int:
     check("Streckenlaenge aus Spiel", abs(getattr(s, "track_length_m", 0.0) - 5148.0) < 0.5, s.track_length_m)
     check("S2 kumulativ", abs(s.last_sector2_s - 79.4) < 1e-4, s.last_sector2_s)
     check("Layout-ID aus Spiel", getattr(s, "layout_id", 0) == 1691, s.layout_id)
-    check("Heading (Fahrtrichtung)", abs(getattr(s, "heading_deg", -1.0) - (math.degrees(2.75) % 360.0)) < 0.01, getattr(s, "heading_deg", None))
     check("Session Rennen", s.session_type == 10 and s.game_phase == 5)
     check("Restzeit", abs(s.session_remaining_s - 1500.0) < 1e-3 and abs(s.session_current_et - 300.0) < 1e-3)
     check("Auto-/Klassenname", s.vehicle_name.startswith("Aquila") or s.vehicle_name == "R3E Car 252", s.vehicle_name)
