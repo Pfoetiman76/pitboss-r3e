@@ -32,7 +32,7 @@ from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.3.1.1 Beta"
+APP_VERSION = "0.3.1.2 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -4334,6 +4334,149 @@ class BrakeTempOverlayWindow(OverlayStyleMixin, QWidget):
         p.end()
 
 
+class FuelCalculatorDialog(QDialog):
+    """0.3.1.2: Sprit-Rechner - wie viel Sprit fuer X Runden oder X Minuten?
+    Basis: Durchschnitts-Verbrauch pro Runde und durchschnittliche Rundenzeit
+    aus der aktuellen Sitzung (live aktualisiert, alle 2 s). Eines der beiden
+    Eingabefelder fuellen - das andere und die Liter werden sofort mitgerechnet
+    (Nutzer-Wunsch: live waehrend des Tippens)."""
+
+    def __init__(self, main):
+        super().__init__(main)
+        self.setWindowTitle("Sprit-Rechner")
+        self.setModal(False)
+        self.setMinimumWidth(360)
+        self._main = main
+        self._updating = False
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 12, 16, 14)
+        lay.setSpacing(8)
+        title = QLabel("SPRIT-RECHNER")
+        title.setStyleSheet("font-size:13px; font-weight:bold; color:#ffffff; letter-spacing:1px;")
+        lay.addWidget(title)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(8)
+        self.ed_rounds = QLineEdit()
+        self.ed_rounds.setPlaceholderText("z. B. 18")
+        self.ed_minutes = QLineEdit()
+        self.ed_minutes.setPlaceholderText("z. B. 30")
+        self.ed_rounds.textChanged.connect(self._on_rounds)
+        self.ed_minutes.textChanged.connect(self._on_minutes)
+        grid.addWidget(QLabel("Runden:"), 0, 0)
+        grid.addWidget(self.ed_rounds, 0, 1)
+        grid.addWidget(QLabel("Minuten:"), 1, 0)
+        grid.addWidget(self.ed_minutes, 1, 1)
+        lay.addLayout(grid)
+        self.lbl_basis = QLabel("")
+        self.lbl_basis.setStyleSheet("font-size:11px; color:#e8e8ec;")
+        lay.addWidget(self.lbl_basis)
+        self.lbl_result = QLabel("")
+        self.lbl_result.setStyleSheet("font-size:20px; font-weight:bold; color:#ffffff;")
+        lay.addWidget(self.lbl_result)
+        self.lbl_tank = QLabel("")
+        self.lbl_tank.setStyleSheet("font-size:11px;")
+        lay.addWidget(self.lbl_tank)
+        hint = QLabel("Eines der Felder füllen – Liter und das andere Feld werden sofort berechnet.\nBasis sind deine gefahrenen Runden der aktuellen Sitzung (alle 2 s aktualisiert).")
+        hint.setStyleSheet("color:#9d9da6; font-size:10px;")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+        self.setStyleSheet("""
+            QDialog { background:#141417; }
+            QLabel { color:#ffffff; background:transparent; font-size:11px; }
+            QLineEdit { background:#1f1f24; color:#ffffff; border:1px solid #3a3a42;
+                         border-radius:4px; padding:4px 8px; font-size:12px; }
+        """)
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._refresh_and_recalc)
+        self._timer.start(2000)
+        self._refresh_and_recalc()
+
+    def _on_rounds(self, _txt=None):
+        if self._updating:
+            return
+        # 0.3.1.2: Rundenzahl geleert, Minuten aber gefuellt -> Minuten sind
+        # jetzt die Quelle.
+        if self._num(self.ed_rounds) is None and self._num(self.ed_minutes) is not None:
+            self._recalc(mode="minutes")
+            return
+        self._recalc(mode="rounds")
+
+    def _on_minutes(self, _txt=None):
+        if self._updating:
+            return
+        if self._num(self.ed_minutes) is None and self._num(self.ed_rounds) is not None:
+            self._recalc(mode="rounds")
+            return
+        self._recalc(mode="minutes")
+
+    def _refresh_and_recalc(self):
+        self._recalc(mode=None)
+
+    def _num(self, edit):
+        try:
+            t = edit.text().strip().replace(",", ".")
+            return float(t) if t else None
+        except Exception:
+            return None
+
+    def _recalc(self, mode=None):
+        try:
+            avg_fuel, avg_lap, cap = self._main.fuel_calc_basis()
+        except Exception:
+            avg_fuel, avg_lap, cap = 0.0, 0.0, 0.0
+        if avg_fuel > 0.01 and avg_lap > 5.0:
+            lap_txt = f"{int(avg_lap // 60)}:{avg_lap % 60:04.1f}".replace(".", ",")
+            self.lbl_basis.setText(f"Ø {avg_fuel:.2f} l/Runde  ·  Ø Runde {lap_txt}")
+        else:
+            self.lbl_basis.setText("Noch keine Messwerte – erst ein paar Runden fahren.")
+        rounds = self._num(self.ed_rounds)
+        minutes = self._num(self.ed_minutes)
+        # 0.3.1.2: Nur ein Feld ist die Quelle - das jeweils andere wird
+        # mitberechnet und (ohne Signal-Schleife) ins Feld zurueckgeschrieben.
+        if mode == "minutes" or (mode is None and rounds is None):
+            if minutes is not None and avg_lap > 5.0:
+                rounds = minutes * 60.0 / avg_lap
+                self._set_text(self.ed_rounds, f"{rounds:.1f}".replace(".", ","))
+            else:
+                rounds = None
+                if minutes is None:
+                    self._set_text(self.ed_rounds, "")
+        elif mode == "rounds" or (mode is None and minutes is None):
+            if rounds is not None and avg_lap > 5.0 and minutes is None:
+                minutes = rounds * avg_lap / 60.0
+                self._set_text(self.ed_minutes, f"{minutes:.1f}".replace(".", ","))
+        if rounds is None and minutes is None:
+            self.lbl_result.setText("—")
+            self.lbl_tank.setText("")
+            return
+        if rounds is None:
+            rounds = 0.0
+        liters = rounds * avg_fuel if avg_fuel > 0.0 else 0.0
+        if avg_fuel <= 0.01:
+            self.lbl_result.setText("keine Messwerte")
+            self.lbl_tank.setText("")
+            return
+        self.lbl_result.setText(f"{liters:.1f} l".replace(".", ","))
+        if cap > 0.1:
+            if liters <= cap:
+                self.lbl_tank.setStyleSheet("font-size:11px; color:#3fb950;")
+                self.lbl_tank.setText(f"passt in den Tank ({cap:.0f} l)".replace(".", ","))
+            else:
+                self.lbl_tank.setStyleSheet("font-size:11px; color:#f85149;")
+                self.lbl_tank.setText(f"mehr als der Tank fasst ({cap:.0f} l)".replace(".", ","))
+        else:
+            self.lbl_tank.setText("")
+
+    def _set_text(self, edit, txt):
+        # Rueckschreiben ohne textChanged-Endlosschleife.
+        self._updating = True
+        try:
+            edit.setText(txt)
+        finally:
+            self._updating = False
+
+
 class FuelOverlayWindow(OverlayStyleMixin, QWidget):
     """0.4.9.0: Kraftstoff - Inhalt in Litern und Prozent, Kapazitaet, Verbrauch
     der letzten Runde, Schnitt und Reichweite in Runden. Bei Hypercars zusaetzlich
@@ -5225,6 +5368,7 @@ class Main(QMainWindow):
         self.pit_overlay_window = None       # 0.4.9.1
         self.delta_overlay_window = None
         self.gapline_overlay_window = None  # 0.3.1.1: Abstand einzeilig (V/H in einer Zeile)
+        self._fuel_calc_dlg = None  # 0.3.1.2: Sprit-Rechner (nicht-modal)
         self.laptime_overlay_window = None
         self.damage_overlay_window = None
         self.overlay_style = self.load_overlay_style()  # 0.4.9.1
@@ -5444,6 +5588,7 @@ class Main(QMainWindow):
         self.act_include_invalid.setChecked(bool(self.include_invalid_laps))
         self.act_include_invalid.toggled.connect(self.toggle_include_invalid_laps)
         _more.addAction("Hotkeys belegen …", self.open_hotkey_settings)  # 0.2.5
+        _more.addAction("Sprit-Rechner …", self.open_fuel_calculator)  # 0.3.1.2: Liter fuer X Runden oder X Minuten
         _more.addAction("Kurven benennen …", self.open_corner_name_dialog)  # 0.2.37; Overlay-Umschalter seit 0.2.41 im Overlays-Menue
         _more.addSeparator()
         _more.addAction("Beta-Feedback senden (Bug/Wunsch) …", self.open_beta_feedback)  # 0.2.33
@@ -5949,6 +6094,53 @@ class Main(QMainWindow):
                     fn()
                 except Exception:
                     pass
+        except Exception:
+            pass
+
+    def fuel_calc_basis(self):
+        """0.3.1.2: Basis fuer den Sprit-Rechner - Ø Verbrauch pro Runde und
+        Ø Rundenzeit aus der aktuellen Sitzung (max. letzte 10 Runden, wie das
+        Sprit-Overlay: Sprit-Differenz an Rundenwechseln, Boxenrunden
+        ausgenommen; nur gueltige Runden zaehlen fuer die Zeit)."""
+        samples = getattr(self, "samples", None) or []
+        uses = []
+        times = []
+        prev_lap = None
+        prev_fuel = None
+        for s in samples[-3000:]:
+            lap = int(getattr(s, "lap_number", 0) or 0)
+            fuel = float(getattr(s, "fuel_l", 0.0) or 0.0)
+            if lap != 0 and prev_lap is not None and lap != prev_lap:
+                used = prev_fuel - fuel
+                if 0.05 < used < 30.0 and not bool(getattr(s, "in_pits", False)):
+                    uses.append(used)
+                t = float(getattr(s, "last_lap_time", 0.0) or 0.0)
+                if 20.0 < t < 900.0 and not int(getattr(s, "lap_invalidated", 0) or 0):
+                    times.append(t)
+            prev_lap = lap
+            prev_fuel = fuel
+        uses = uses[-10:]
+        times = times[-10:]
+        avg_fuel = (sum(uses) / len(uses)) if uses else 0.0
+        avg_lap = (sum(times) / len(times)) if times else 0.0
+        cap = 0.0
+        try:
+            last = getattr(self, "last_live_sample", None) or (samples[-1] if samples else None)
+            if last is not None:
+                cap = float(getattr(last, "fuel_capacity_l", 0.0) or 0.0)
+        except Exception:
+            cap = 0.0
+        return avg_fuel, avg_lap, cap
+
+    def open_fuel_calculator(self):
+        """0.3.1.2: Sprit-Rechner oeffnen (nicht-modal, mehrere offen lassen
+        waehrend der Fahrt moeglich - Werte aktualisieren sich live)."""
+        try:
+            dlg = getattr(self, "_fuel_calc_dlg", None)
+            if dlg is None or not dlg.isVisible():
+                self._fuel_calc_dlg = FuelCalculatorDialog(self)
+            self._fuel_calc_dlg.show()
+            self._fuel_calc_dlg.raise_()
         except Exception:
             pass
 
