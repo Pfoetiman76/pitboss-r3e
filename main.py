@@ -32,7 +32,7 @@ from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.3.1.2 Beta"
+APP_VERSION = "0.3.1.3 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -63,6 +63,26 @@ HOTKEY_CONFIG_PATH = EXPORT_DIR / "hotkeys.json"  # 0.2.5: frei belegbare Hotkey
 UI_LAYOUT_PATH = EXPORT_DIR / "ui_layout.json"  # 0.2.10: Einfache Ansicht vs. Experte
 ANALYSIS_CONFIG_PATH = EXPORT_DIR / "analysis_config.json"  # 0.2.31: Auswertungs-Optionen
 FEEDBACK_DIR = EXPORT_DIR / "feedback"  # 0.2.33: Beta-Tester-Feedback (offline gespeicherte Dateien)
+FUEL_HISTORY_PATH = EXPORT_DIR / "fuel_history.json"  # 0.3.1.3: Verbrauch pro Strecke/Auto fuer den Sprit-Rechner
+
+
+def load_fuel_history() -> dict:
+    """0.3.1.3: {\"Strecke|Auto\": {\"fuel_l\": [...], \"lap_s\": [...], ...}} laden."""
+    try:
+        raw = json.loads(FUEL_HISTORY_PATH.read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_fuel_history(data: dict) -> bool:
+    """0.3.1.3: Verbrauchs-Historie in Dokumente\\\\PitBoss R3E\\\\fuel_history.json speichern."""
+    try:
+        EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        FUEL_HISTORY_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        return True
+    except Exception:
+        return False
 
 def load_analysis_config() -> dict:
     """0.2.31: {"include_invalid_laps": bool} laden; ungueltig -> Standard."""
@@ -2136,13 +2156,24 @@ class GapLineOverlayWindow(OverlayStyleMixin, QWidget):
 
         ahead = float(getattr(s, "gap_ahead_s", 0.0) or 0.0)
         behind = float(getattr(s, "gap_behind_s", 0.0) or 0.0)
-        # vorn = rot (Auto direkt vor mir), hinten = gruen (Nutzer-Wunsch 0.3.1.1)
-        p.setPen(QColor("#f85149") if self._st() != "light" else QColor("#c62828"))
-        p.drawText(QRectF(12, 0, w * 0.40, h), Qt.AlignVCenter | Qt.AlignLeft, "V  " + _fmt(ahead, "-"))
-        p.setPen(self._muted())
-        p.drawText(QRectF(w * 0.40, 0, w * 0.20, h), Qt.AlignCenter, "\u2194")
-        p.setPen(QColor("#3fb950") if self._st() != "light" else QColor("#1a7f37"))
-        p.drawText(QRectF(w * 0.60, 0, w * 0.40 - 12, h), Qt.AlignVCenter | Qt.AlignRight, "H  " + _fmt(behind, "+"))
+        light = self._st() == "light"
+        col_ahead = QColor("#c62828") if light else QColor("#f85149")
+        col_behind = QColor("#1a7f37") if light else QColor("#3fb950")
+
+        def _txt(rect, flags, text, color):
+            # 0.3.1.3: dunkler Schatten hinter der farbigen Schrift - das gruen
+            # des H war auf gruenem Streckenhintergrund unsichtbar (Nutzer-Report).
+            p.setPen(QColor(0, 0, 0, 200))
+            p.drawText(rect.translated(1.5, 1.5), flags, text)
+            p.setPen(color)
+            p.drawText(rect, flags, text)
+
+        # 0.3.1.3: Pfeil deutlich groesser (Nutzer-Wunsch) - ueber die volle
+        # Breite links-/rechtsbuendig zeichnen, damit nichts abgeschnitten wird.
+        _txt(QRectF(12, 0, w - 24, h), Qt.AlignVCenter | Qt.AlignLeft, "V  " + _fmt(ahead, "-"), col_ahead)
+        _txt(QRectF(12, 0, w - 24, h), Qt.AlignVCenter | Qt.AlignRight, "H  " + _fmt(behind, "+"), col_behind)
+        fa = QFont(); fa.setPointSizeF(max(12.0, h * 0.85)); fa.setBold(True); p.setFont(fa)
+        _txt(QRectF(w * 0.42, 0, w * 0.16, h), Qt.AlignCenter, "\u2194", QColor("#ffffff") if not light else QColor("#16161a"))
         p.end()
 
 
@@ -4377,7 +4408,7 @@ class FuelCalculatorDialog(QDialog):
         self.lbl_tank = QLabel("")
         self.lbl_tank.setStyleSheet("font-size:11px;")
         lay.addWidget(self.lbl_tank)
-        hint = QLabel("Eines der Felder füllen – Liter und das andere Feld werden sofort berechnet.\nBasis sind deine gefahrenen Runden der aktuellen Sitzung (alle 2 s aktualisiert).")
+        hint = QLabel("Eines der Felder füllen – Liter und das andere Feld werden sofort berechnet.\nBasis: gefahrene Runden der aktuellen Sitzung, sonst gespeicherte Werte dieser\nStrecke/Auto (alle 2 s aktualisiert).")
         hint.setStyleSheet("color:#9d9da6; font-size:10px;")
         hint.setWordWrap(True)
         lay.addWidget(hint)
@@ -4422,12 +4453,12 @@ class FuelCalculatorDialog(QDialog):
 
     def _recalc(self, mode=None):
         try:
-            avg_fuel, avg_lap, cap = self._main.fuel_calc_basis()
+            avg_fuel, avg_lap, cap, source = self._main.fuel_calc_basis()
         except Exception:
-            avg_fuel, avg_lap, cap = 0.0, 0.0, 0.0
+            avg_fuel, avg_lap, cap, source = 0.0, 0.0, 0.0, ""
         if avg_fuel > 0.01 and avg_lap > 5.0:
             lap_txt = f"{int(avg_lap // 60)}:{avg_lap % 60:04.1f}".replace(".", ",")
-            self.lbl_basis.setText(f"Ø {avg_fuel:.2f} l/Runde  ·  Ø Runde {lap_txt}")
+            self.lbl_basis.setText(f"Ø {avg_fuel:.2f} l/Runde  ·  Ø Runde {lap_txt}  ·  {source}")
         else:
             self.lbl_basis.setText("Noch keine Messwerte – erst ein paar Runden fahren.")
         rounds = self._num(self.ed_rounds)
@@ -6098,10 +6129,15 @@ class Main(QMainWindow):
             pass
 
     def fuel_calc_basis(self):
-        """0.3.1.2: Basis fuer den Sprit-Rechner - Ø Verbrauch pro Runde und
-        Ø Rundenzeit aus der aktuellen Sitzung (max. letzte 10 Runden, wie das
-        Sprit-Overlay: Sprit-Differenz an Rundenwechseln, Boxenrunden
-        ausgenommen; nur gueltige Runden zaehlen fuer die Zeit)."""
+        """0.3.1.2/0.3.1.3: Basis fuer den Sprit-Rechner - Ø Verbrauch pro Runde und
+        Ø Rundenzeit. Zuerst aus der aktuellen Sitzung (max. letzte 10 Runden,
+        wie das Sprit-Overlay: Sprit-Differenz an Rundenwechseln, Boxenrunden
+        ausgenommen; nur gueltige Runden zaehlen fuer die Zeit). Steht noch
+        nichts aus der laufenden Sitzung zur Verfuegung, greift 0.3.1.3 auf die
+        gespeicherte Verbrauchs-Historie zurueck (gleiche Strecke/Auto,
+        sonst der zuletzt gepflegte Eintrag) - der Rechner funktioniert dann
+        auch VOR der ersten Runde. Rueckgabe: (Ø l/Runde, Ø Rundenzeit s,
+        Tankgroesse l, Quell-Text)."""
         samples = getattr(self, "samples", None) or []
         uses = []
         times = []
@@ -6130,7 +6166,71 @@ class Main(QMainWindow):
                 cap = float(getattr(last, "fuel_capacity_l", 0.0) or 0.0)
         except Exception:
             cap = 0.0
-        return avg_fuel, avg_lap, cap
+        if avg_fuel > 0.01 and avg_lap > 5.0:
+            return avg_fuel, avg_lap, cap, "aktuelle Sitzung"
+        # 0.3.1.3: Fallback auf gespeicherte Verbrauchswerte (fuel_history.json).
+        hist = load_fuel_history()
+        if hist:
+            key = None
+            try:
+                last = getattr(self, "last_live_sample", None) or (samples[-1] if samples else None)
+                if last is not None:
+                    k = f"{(getattr(last, 'track', '') or '').strip()}|{(getattr(last, 'vehicle_name', '') or '').strip()}"
+                    if k in hist:
+                        key = k
+            except Exception:
+                key = None
+            if key is None:
+                key = max(hist, key=lambda k: (hist[k].get("updated") or "") if isinstance(hist[k], dict) else "")
+            entry = hist.get(key)
+            if isinstance(entry, dict):
+                fuels = [x for x in (entry.get("fuel_l") or []) if isinstance(x, (int, float))]
+                ltimes = [x for x in (entry.get("lap_s") or []) if isinstance(x, (int, float))]
+                if fuels:
+                    af = sum(fuels) / len(fuels)
+                    al = (sum(ltimes) / len(ltimes)) if ltimes else 0.0
+                    if af > 0.01 and al > 5.0:
+                        src = f"gespeicherte Werte: {entry.get('track', '?')} / {entry.get('vehicle', '?')}"
+                        return af, al, cap, src
+        return avg_fuel, avg_lap, cap, "aktuelle Sitzung"
+
+    def _update_fuel_history(self, rows, s):
+        """0.3.1.3: Verbrauch und Rundenzeit jeder sauberen Runde dauerhaft
+        pro Strecke+Auto speichern (fuel_history.json, je bis zu 10 Werte).
+        Damit arbeitet der Sprit-Rechner auch ohne laufende Messwerte, z. B.
+        direkt zu Beginn der naechsten Session."""
+        try:
+            if not rows:
+                return
+            first, last = rows[0], rows[-1]
+            used = float(getattr(first, "fuel_l", 0.0) or 0.0) - float(getattr(last, "fuel_l", 0.0) or 0.0)
+            lap_time = float(getattr(s, "last_lap_time", 0.0) or 0.0)
+            track = (getattr(first, "track", "") or "").strip()
+            vehicle = (getattr(first, "vehicle_name", "") or "").strip()
+            if not track or not vehicle:
+                return
+            if not (0.05 < used < 30.0):
+                return
+            if bool(getattr(first, "in_pits", False)) or bool(getattr(last, "in_pits", False)):
+                return
+            if not (20.0 < lap_time < 900.0) or int(getattr(s, "lap_invalidated", 0) or 0):
+                return
+            key = f"{track}|{vehicle}"
+            hist = load_fuel_history()
+            entry = hist.get(key) if isinstance(hist.get(key), dict) else {}
+            fuels = [x for x in (entry.get("fuel_l") or []) if isinstance(x, (int, float))]
+            ltimes = [x for x in (entry.get("lap_s") or []) if isinstance(x, (int, float))]
+            fuels.append(round(used, 3))
+            ltimes.append(round(lap_time, 3))
+            entry["fuel_l"] = fuels[-10:]
+            entry["lap_s"] = ltimes[-10:]
+            entry["updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+            entry["track"] = track
+            entry["vehicle"] = vehicle
+            hist[key] = entry
+            save_fuel_history(hist)
+        except Exception:
+            pass
 
     def open_fuel_calculator(self):
         """0.3.1.2: Sprit-Rechner oeffnen (nicht-modal, mehrere offen lassen
@@ -8792,6 +8892,10 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 self.consider_live_completed_lap_as_reference(completed, self.live_lap_number)
                 self.maybe_export_live_bestlap(completed, self.live_lap_number)
                 self.refresh_corner_list(completed)  # 0.2.37: Kurven der Strecke erkennen
+                try:
+                    self._update_fuel_history(completed, s)  # 0.3.1.3: Verbrauch dauerhaft merken (Sprit-Rechner)
+                except Exception:
+                    pass
                 self.live_coach.on_lap_completed(completed, self.live_lap_number,
                                                  self.live_delta_s, self.live_coach_line)
                 try:
