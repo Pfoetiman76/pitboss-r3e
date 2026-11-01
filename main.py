@@ -32,7 +32,7 @@ from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.3.2.0 Beta"
+APP_VERSION = "0.3.2.1 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -9120,6 +9120,22 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         self._set_rec_ui(True)
         self.log.append("🔴 Recording gestartet: Auto-Report/CSV werden beim Stop automatisch gespeichert.")
         self.status.setText("🔴 RECORDING AKTIV – " + self.hotkey_config.get("record", "F8") + " stoppt und speichert Report/CSV automatisch.")
+        # 0.3.2.1: Aufnahme-Start ohne RaceRoom-Verbindung sichtbar machen.
+        # Vorher lief eine Aufnahme im Menue still ins Leere; beim Stop kam
+        # nur der Standard-Dialog "keine Samples". Jetzt direkt beim Start:
+        # Verbindungsfehler nennen und sagen, was zu tun ist.
+        _ok_ts = getattr(self, "_last_read_ok_ts", 0.0)
+        if not _ok_ts or (time.monotonic() - _ok_ts) > 2.5:
+            _err = getattr(self, "_live_err", None) or "keine Daten von RaceRoom"
+            self.log.append("⚠️ Recording gestartet, aber RaceRoom liefert gerade keine Daten ("
+                            + _err + "). Samples werden erst gesammelt, sobald du in einer Session auf der Strecke bist.")
+            QMessageBox.warning(
+                self, "Aufnahme ohne RaceRoom-Verbindung",
+                "Die Aufnahme läuft, aber RaceRoom liefert gerade keine Daten:\n\n"
+                + _err + "\n\n"
+                "Solange du nicht in einer Session auf der Strecke bist, sammelt die Aufnahme keine Samples. "
+                "Bitte in RaceRoom in die Session fahren – die laufende Aufnahme übernimmt dann automatisch, "
+                "sobald Daten kommen.")
         self.refresh_dashboard()
 
     def _set_telemetry_cursor(self, dist):
@@ -11477,6 +11493,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
