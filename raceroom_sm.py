@@ -759,7 +759,13 @@ class R3EReader:
         self.layout_warning = self._layout_warning(d)
         n_cars = int(d.num_cars)
         if n_cars <= 0:
-            raise RuntimeError("RaceRoom: keine aktiven Fahrzeuge (noch nicht in einer Session).")
+            # 0.3.2.1: Manche Sessions (z. B. Training ohne Gegner) melden
+            # num_cars = 0, obwohl der Spieler faehrt. Nur ohne Fahrzeug/
+            # im Menue/Replay ist das ein echter Fehler; auf der Strecke wird
+            # ohne Gegnerliste weitergearbeitet (Gegner-/Abstand-Features
+            # bleiben dann leer, alle eigenen Werte kommen aus dem Kopfblock).
+            if int(d.game_in_menus) == 1 or int(d.game_in_replay) == 1 or int(d.control_type) != 0:
+                raise RuntimeError("RaceRoom: keine aktiven Fahrzeuge (noch nicht in einer Session).")
 
         drivers = self._drivers(raw, d)
         ego_slot = int(d.vehicle_info.slot_id)
@@ -1148,7 +1154,7 @@ def _selftest() -> int:
     # Fehlerfaelle
     for label, mutate, needle in (
         ("Spiel aus", lambda x: setattr(x, "version_major", 0), "nicht aktiv"),
-        ("Keine Autos", lambda x: setattr(x, "num_cars", 0), "keine aktiven"),
+        ("Keine Autos (Menue)", lambda x: (setattr(x, "num_cars", 0), setattr(x, "game_in_menus", 1)), "keine aktiven"),
     ):
         dd = make_demo_shared(); mutate(dd)
         try:
@@ -1156,6 +1162,12 @@ def _selftest() -> int:
             check(f"Fehlerfall {label}", False, "(keine Exception)")
         except RuntimeError as e:
             check(f"Fehlerfall {label}", needle in str(e), str(e))
+    # 0.3.2.1: Solo-Session (num_cars = 0) auf der Strecke: keine Exception,
+    # eigene Werte vollstaendig, Gegner-/Abstand-Listen leer.
+    d8 = make_demo_shared(); d8.num_cars = 0; d8.game_in_menus = 0; d8.control_type = 0
+    s8 = R3EReader(_FakeSample, raw_provider=lambda: bytes(d8), env={}).read_sample()
+    check("Solo (num_cars=0) auf Strecke laeuft weiter", s8.speed_kmh > 0.0 and s8.opponents == () and s8.opponents_behind == (), (s8.speed_kmh, s8.opponents))
+
     # Nullspeicher (Mapping existiert, Spiel schreibt nicht)
     try:
         R3EReader(_FakeSample, raw_provider=lambda: bytes(ctypes.sizeof(R3EShared)), env={}).read_sample()
