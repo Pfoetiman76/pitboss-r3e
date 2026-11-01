@@ -32,7 +32,7 @@ from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.3.0.0 Beta"
+APP_VERSION = "0.3.0.1 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -3512,12 +3512,23 @@ class PedalOverlayWindow(OverlayStyleMixin, QWidget):
 
 class LinkCard(QFrame):
     """0.2.0: klickbare Kachel, die eine Web-Seite im Standardbrowser oeffnet."""
-    def __init__(self, title: str, subtitle: str, url: str, parent=None):
+    def __init__(self, title: str, subtitle: str, url: str, parent=None, slim: bool = False):
         super().__init__(parent)
         self._url = url
         self.setObjectName("linkCard")
         self.setCursor(Qt.PointingHandCursor)
         self.setToolTip(url)
+        # 0.3.0.1: slim=True = einzeilige Variante fuer das kompakte Dashboard
+        if slim:
+            self.setMinimumHeight(34)
+            row = QHBoxLayout(self); row.setContentsMargins(10, 4, 10, 4); row.setSpacing(8)
+            t = QLabel(title); t.setObjectName("linkCardTitle")
+            sub = QLabel(subtitle); sub.setObjectName("linkCardSub")
+            arrow = QLabel("\u2197"); arrow.setObjectName("linkCardArrow")
+            for lab in (t, sub, arrow):
+                lab.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            row.addWidget(t); row.addWidget(sub, 1); row.addWidget(arrow, 0, Qt.AlignRight | Qt.AlignVCenter)
+            return
         self.setMinimumHeight(104)
         row = QHBoxLayout(self); row.setContentsMargins(24, 14, 24, 14)
         col = QVBoxLayout(); col.setSpacing(4); col.addStretch(1)
@@ -5371,32 +5382,32 @@ class Main(QMainWindow):
         layout.addWidget(self.tabs, stretch=6)
 
         dash_tab = QWidget(); dash_layout = QVBoxLayout(dash_tab)
-        dash_layout.setContentsMargins(0, 8, 0, 0); dash_layout.setSpacing(12)
-        sess = QGroupBox("SITZUNG"); sg = QGridLayout(sess); sg.setHorizontalSpacing(10)
-        # 0.2.12: Setup-Auswahl aus der Sitzungsleiste entfernt (Widget bleibt intern aktiv)
-        # 0.2.8: Fahrerprofil-Auswahl und "Fahrer & Hardware"-Button aus der Sitzungsleiste entfernt.
-        sg.setColumnStretch(1, 1)
-        dash_layout.addWidget(sess)
+        dash_layout.setContentsMargins(0, 6, 0, 0); dash_layout.setSpacing(8)
+        # 0.3.0.1: Kompakt-Dashboard - SITZUNG-Box entfernt (Inhalt lebt in den
+        # Kacheln und der Kopfleiste), Kacheln im Ein-Zeilen-Stil.
         self.dash_cards = {}
-        card_grid = QGridLayout(); card_grid.setSpacing(10)
+        card_grid = QGridLayout(); card_grid.setSpacing(6)
         for i, key in enumerate(["Verbindung", "Recording", "Runden", "Referenz", "Reifen", "Coach-Fokus"]):
             frame = QFrame(); frame.setObjectName("dashCard")
-            frame.setMinimumHeight(84)
-            fl = QVBoxLayout(frame); fl.setContentsMargins(16, 12, 16, 10); fl.setSpacing(3)
+            frame.setFixedHeight(34)
+            fl = QHBoxLayout(frame); fl.setContentsMargins(10, 4, 10, 4); fl.setSpacing(6)
             lab = QLabel(key.upper()); lab.setObjectName("dashCardKey")
-            val = QLabel("—"); val.setObjectName("dashCardVal"); val.setWordWrap(True)
-            fl.addWidget(lab); fl.addWidget(val)
+            val = QLabel("—"); val.setObjectName("dashCardVal")
+            val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            fl.addWidget(lab); fl.addStretch(1); fl.addWidget(val)
             self.dash_cards[key] = val
             card_grid.addWidget(frame, i // 3, i % 3)
         for c in range(3):
             card_grid.setColumnStretch(c, 1)
+        # 0.3.0.1: Wettbewerbs-Kachel einzeilig (slim)
         card_grid.addWidget(LinkCard("WETTBEWERBE & RANGLISTEN", "RACEROOM COMPETITIONS IM BROWSER \u00d6FFNEN",
-                                     RACEROOM_COMPETITIONS_URL), 2, 0, 1, 3)
+                                     RACEROOM_COMPETITIONS_URL, slim=True), 2, 0, 1, 3)
         dash_layout.addLayout(card_grid)
         title_coach = QLabel("AKTUELLER COACH-FOKUS"); title_coach.setObjectName("sectionTitle")
         dash_layout.addWidget(title_coach)
         self.dash_coach = QTextEdit(); self.dash_coach.setReadOnly(True)
-        self.dash_coach.setMinimumHeight(180)
+        # 0.3.0.1: kleinere Mindesthoehe - der Block wächst nur bei laengerem Text
+        self.dash_coach.setMinimumHeight(110)
         self.dash_coach.setStyleSheet("font-size:14px;")
         dash_layout.addWidget(self.dash_coach, 1)
         self.tabs.addTab(dash_tab, "Dashboard")
@@ -7234,7 +7245,13 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
 
     def set_dash_card(self, key: str, value: str):
         if hasattr(self, "dash_cards") and key in self.dash_cards:
-            self.dash_cards[key].setText(value)
+            # 0.3.0.1: Ein-Zeilen-Kacheln - lange Werte kuerzen, damit das
+            # kompakte Layout nicht gesprengt wird. Vollstaendige Meldungen
+            # stehen weiterhin in der Kopfleiste und im Live-Log.
+            v = str(value)
+            if len(v) > 48:
+                v = v[:45].rstrip() + "\u2026"
+            self.dash_cards[key].setText(v)
 
     def current_best_lap_time_s(self) -> float:
         best = self.sim_best_lap_from_scoring() if self.samples else 0.0
