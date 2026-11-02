@@ -971,7 +971,10 @@ class R3EReader:
             # 0.2.20: zusaetzliche Telemetrie-Kanaele fuer CSV/Analyse
             g_force_lat=_f(P.local_g_force.x),
             g_force_long=_f(P.local_g_force.z),
-            heading_deg=math.degrees(_f(P.orientation.yaw)) % 360.0,
+            # 0.3.2.2: heading kommt aus car_orientation (R3EOriF32: pitch/yaw/roll).
+            # P.orientation ist ein reiner Positionsvektor (R3EVec3F64, x/y/z) OHNE yaw -
+            # der alte Zugriff riss jeden read_sample() mit AttributeError ab.
+            heading_deg=math.degrees(_f(d.car_orientation.yaw)) % 360.0,
             velocity_lat_ms=_f(P.local_velocity.x),
             velocity_long_ms=_f(P.local_velocity.z),
             engine_torque_nm=_f(P.engine_torque),
@@ -1036,6 +1039,7 @@ def make_demo_shared(n_cars: int = 4) -> "R3EShared":
     d.brake = d.brake_raw = 0.0
     d.clutch = d.clutch_raw = 0.0
     d.steer_input_raw = -0.12
+    d.car_orientation.yaw = 1.5707963  # 0.3.2.2: 90 Grad Ost-Kurs fuer den Heading-Check
     d.brake_bias = 0.56
     d.pit_limiter = 0
     d.pit_state = 0
@@ -1112,6 +1116,7 @@ def _selftest() -> int:
     check("Reifentemp links/mitte/rechts", s.tire_fl_temp_l_c == 80.0 and s.tire_fl_temp_c_c == 82.0 and s.tire_fl_temp_r_c == 84.0)
     check("Pedale", abs(s.throttle - 0.8) < 1e-6 and s.brake == 0.0)
     check("Lenkung", abs(s.steering + 0.12) < 1e-6)
+    check("Heading aus car_orientation.yaw", abs(s.heading_deg - 90.0) < 0.01, s.heading_deg)  # 0.3.2.2
     check("Boxenstopps", s.num_pitstops == 1)
     check("Platz", s.place == 2)
     check("Gaps", abs(s.gap_ahead_s - 1.35) < 1e-6 and abs(s.gap_behind_s - 0.82) < 1e-6)
