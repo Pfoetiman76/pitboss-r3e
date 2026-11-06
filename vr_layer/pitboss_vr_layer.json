@@ -1,0 +1,13 @@
+{
+  "file_format_version": "1.0.0",
+  "api_layer": {
+    "name": "XR_APILAYER_PitBossR3E_VR",
+    "api_version": "1.0",
+    "implementation_version": "1",
+    "description": "PitBoss R3E VR overlay layer (0.4.0.0 PoC: Testtafel + Shared-Memory-Bild)"
+  },
+  "functions": {
+    "xrGetInstanceProcAddr": "LayerGetInstanceProcAddr",
+    "xrCreateApiLayerInstance": "xrCreateApiLayerInstance"
+  }
+}
