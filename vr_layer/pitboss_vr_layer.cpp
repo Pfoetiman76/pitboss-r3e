@@ -1,10 +1,10 @@
 // ---------------------------------------------------------------------------
 // PitBoss R3E - OpenXR API Layer "VR Overlay" (Proof of Concept, 0.4.0.0)
 // ---------------------------------------------------------------------------
-// Blendet eine virtuelle Tafel (Quad-Layer) in die OpenXR-Szene des Spiels
+// Blaendet eine virtuelle Tafel (Quad-Layer) in die OpenXR-Szene des Spiels
 // ein. Funktioniert mit jeder OpenXR-Runtime, also ausdruecklich auch mit
-// Virtual Desktop / VDXR (kein SteamVR noetig) - der Layer laeuft als
-// Teil des Spielprozesses.
+// Virtual Desktop / VDXR (kein SteamVR noetig) - der Layer laeuft im
+// Spielprozess.
 //
 // Architektur:
 //   PitBoss (Python) rendert die Overlay-Inhalte als BGRA-Bild in den
@@ -12,16 +12,18 @@
 //   width, height, frame). Der Layer liest diesen Puffer und legt ihn als
 //   Quad-Layer ueber die Szene. Fehlt der Puffer (PitBoss laeuft nicht),
 //   zeigt der Layer ein ruhiges Testmuster - so ist der PoC ohne PitBoss
-//   pruefbar ("weisse Testtafel").
+//   pruefbar ("Testtafel").
+//
+// Verhandlung: Loader-Interface v1 (xrCreateApiLayerInstance + nextInfo-
+// Kette), siehe openxr_loader_negotiation.h (mitgeliefert unter third_party).
 //
 // PoC-Einschraenkungen (dokumentiert, Ausbau in Folgeversionen):
-//   - Eine Instanz, eine Session (map, aber nur erster Session aktiv).
-//   - Texture-Updates ueber den Immediate Context des Spiels (D3D11).
-//     Fuer den PoC akzeptiert; Ausbau auf deferred context geplant.
+//   - Eine Instanz; pro Session ein Zustand (erste Session aktiv).
+//   - Textur-Updates ueber den Immediate Context des Spiels (D3D11).
 //   - Feste Pose im LOCAL-Raum (oben, etwas vor dem Startpunkt).
 //
-// Build: siehe vr_layer/CMakeLists.txt (Windows, D3D11, OpenXR-Header per
-// FetchContent aus dem offiziellen Khronos SDK-Source).
+// Build: siehe vr_layer/CMakeLists.txt (Windows, D3D11, vendored Header,
+// kein Netzwerk-Zugriff noetig).
 // ---------------------------------------------------------------------------
 
 #define XR_USE_PLATFORM_WIN32
@@ -32,9 +34,8 @@
 
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
-#include "xr_loader.h"
+#include <openxr/openxr_loader_negotiation.h>
 
-#include <atomic>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -51,7 +52,7 @@
 #endif
 
 // ---------------------------------------------------------------------------
-// Logging (DebugView / dbgview; im Normalfall still)
+// Logging (DebugView; im Normalfall still)
 // ---------------------------------------------------------------------------
 
 static void Log(const char* fmt, ...) {
@@ -80,30 +81,27 @@ struct SharedHeader {
     uint32_t height;
     uint32_t frame;     // laufende Nummer, Python inkrementiert pro Bild
 };
-static const uint32_t kMagic = 0x52564250;  // "PBVR" little-endian
+static const uint32_t kMagic   = 0x52564250;  // "PBVR" little-endian
 static const uint32_t kVersion = 1;
-static const uint32_t kTexWidth = 512;
+static const uint32_t kTexWidth  = 512;
 static const uint32_t kTexHeight = 256;
 
 // ---------------------------------------------------------------------------
 // Globaler Layer-Zustand
 // ---------------------------------------------------------------------------
 
-static XrInstance                    g_instance = XR_NULL_HANDLE;
-static PFN_xrGetInstanceProcAddr     g_nextGPA = nullptr;
-static PFN_xrEndFrame               g_nextEndFrame = nullptr;
-static PFN_xrDestroyInstance        g_nextDestroyInstance = nullptr;
+static XrInstance                 g_instance = XR_NULL_HANDLE;
+static PFN_xrGetInstanceProcAddr  g_nextGPA = nullptr;
+static PFN_xrEndFrame             g_nextEndFrame = nullptr;
 
-// GPA'd OpenXR-Funktionen (Runtime-seitig)
-static PFN_xrEnumerateSwapchainFormats  g_xrEnumerateSwapchainFormats;
+// Ueber g_nextGPA aufgeloeste Runtime-Funktionen
+static PFN_xrEnumerateSwapchainFormats g_xrEnumerateSwapchainFormats;
 static PFN_xrCreateSwapchain           g_xrCreateSwapchain;
 static PFN_xrEnumerateSwapchainImages  g_xrEnumerateSwapchainImages;
 static PFN_xrAcquireSwapchainImage     g_xrAcquireSwapchainImage;
 static PFN_xrWaitSwapchainImage        g_xrWaitSwapchainImage;
 static PFN_xrReleaseSwapchainImage     g_xrReleaseSwapchainImage;
 static PFN_xrCreateReferenceSpace      g_xrCreateReferenceSpace;
-static PFN_xrDestroySwapchain          g_xrDestroySwapchain;
-static PFN_xrDestroySpace              g_xrDestroySpace;
 
 // ---------------------------------------------------------------------------
 // Per-Session Overlay-Zustand
@@ -114,19 +112,14 @@ struct OverlayState {
     bool        ok = false;            // Overlay einsatzbereit
     XrSwapchain swapchain = XR_NULL_HANDLE;
     XrSpace     space = XR_NULL_HANDLE;
-    ID3D11Device*        device = nullptr;   // no ref addiert (Lebenszeit: Spiel)
-    ID3D11DeviceContext* context = nullptr;  // Immediate Context (kein Ref)
+    ID3D11Device*        device = nullptr;   // keine Referenz addiert
+    ID3D11DeviceContext* context = nullptr;  // Immediate Context (keine Ref)
     std::vector<XrSwapchainImageD3D11KHR> images;
     XrCompositionLayerQuad quad{};
-    // CPU-Puffer fuer das Bild (BGRA)
-    std::vector<uint8_t> pixels;
-    // Shared Memory (PitBoss)
-    HANDLE      shm = nullptr;
+    std::vector<uint8_t> pixels;      // CPU-Bildpuffer (BGRA)
+    HANDLE      shm = nullptr;        // Shared Memory mit PitBoss
     SharedHeader* shmHeader = nullptr;
     uint8_t*    shmPixels = nullptr;
-    DWORD       shmSize = 0;
-    uint32_t    lastFrameSeen = 0;
-    // Testmuster-Takt
     uint64_t    tick = 0;
 };
 
@@ -138,8 +131,8 @@ static std::map<XrSession, OverlayState> g_sessions;
 // ---------------------------------------------------------------------------
 
 static void CloseShm(OverlayState* st) {
-    if (st->shmPixels) st->shmPixels = nullptr;
-    if (st->shmHeader) st->shmHeader = nullptr;
+    st->shmPixels = nullptr;
+    st->shmHeader = nullptr;
     if (st->shm) { CloseHandle(st->shm); st->shm = nullptr; }
 }
 
@@ -152,7 +145,6 @@ static void TryOpenShm(OverlayState* st) {
     st->shm = h;
     st->shmHeader = reinterpret_cast<SharedHeader*>(p);
     st->shmPixels = reinterpret_cast<uint8_t*>(p) + sizeof(SharedHeader);
-    st->shmSize = 0;
 }
 
 static bool ShmValid(const OverlayState* st) {
@@ -170,7 +162,6 @@ static bool ShmValid(const OverlayState* st) {
 static void FillPixels(OverlayState* st) {
     uint8_t* dst = st->pixels.data();
     const size_t rowBytes = kTexWidth * 4;
-    // 1) Testmuster als Grundlage (BGRA)
     for (uint32_t y = 0; y < kTexHeight; ++y) {
         uint8_t* row = dst + y * rowBytes;
         uint8_t v = static_cast<uint8_t>(40 + (y * 120) / kTexHeight);
@@ -184,22 +175,22 @@ static void FillPixels(OverlayState* st) {
     }
     // Rahmen
     for (uint32_t x = 0; x < kTexWidth; ++x) {
-        for (int e = 0; e < 3; ++e) {
-            *(dst + x * 4 + 2) = 0xD0; *(dst + x * 4 + 1) = 0xD0; *(dst + x * 4) = 0xD0;
-            *(dst + (kTexHeight - 1 - e) * rowBytes + x * 4 + 2) = 0xD0;
-            *(dst + (kTexHeight - 1 - e) * rowBytes + x * 4 + 1) = 0xD0;
-            *(dst + (kTexHeight - 1 - e) * rowBytes + x * 4) = 0xD0;
+        for (uint32_t e = 0; e < 3; ++e) {
+            uint8_t* t = dst + e * rowBytes + x * 4;
+            t[0] = t[1] = t[2] = 0xD0;
+            uint8_t* b = dst + (kTexHeight - 1 - e) * rowBytes + x * 4;
+            b[0] = b[1] = b[2] = 0xD0;
         }
     }
     for (uint32_t y = 0; y < kTexHeight; ++y) {
-        for (int e = 0; e < 3; ++e) {
+        for (uint32_t e = 0; e < 3; ++e) {
             uint8_t* l = dst + y * rowBytes + e * 4;
-            l[2] = l[1] = l[0] = 0xD0;
+            l[0] = l[1] = l[2] = 0xD0;
             uint8_t* r = dst + y * rowBytes + (kTexWidth - 1 - e) * 4;
-            r[2] = r[1] = r[0] = 0xD0;
+            r[0] = r[1] = r[2] = 0xD0;
         }
     }
-    // 2) Lauftext-Streifen: wandernder Block als "Lebenszeichen"
+    // "Lebenszeichen": wandernder Block
     st->tick++;
     uint32_t bar = static_cast<uint32_t>((st->tick * 6) % (kTexWidth - 96));
     for (uint32_t y = kTexHeight - 48; y < kTexHeight - 16; ++y) {
@@ -208,11 +199,10 @@ static void FillPixels(OverlayState* st) {
             px[0] = 0x60; px[1] = 0xC0; px[2] = 0x30; px[3] = 0xFF;  // gruen
         }
     }
-    // 3) PitBoss-Frame uebernehmen, wenn vorhanden
+    // PitBoss-Frame uebernehmen, wenn vorhanden
     if (!st->shm) TryOpenShm(st);
     if (st->shm && ShmValid(st)) {
         memcpy(dst, st->shmPixels, kTexWidth * kTexHeight * 4);
-        st->lastFrameSeen = st->shmHeader->frame;
     }
 }
 
@@ -224,7 +214,6 @@ static void InitOverlay(XrSession session, OverlayState* st) {
     st->initialized = true;
     st->ok = false;
 
-    // Unterstuetzte Swapchain-Formate holen; D3D11-Formate als int64 (DXGI)
     uint32_t count = 0;
     if (g_xrEnumerateSwapchainFormats(session, 0, &count, nullptr) != XR_SUCCESS
         || count == 0) {
@@ -266,7 +255,8 @@ static void InitOverlay(XrSession session, OverlayState* st) {
     st->images.resize(imgCount);
     for (auto& img : st->images) img.type = XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR;
     g_xrEnumerateSwapchainImages(st->swapchain, imgCount, &imgCount,
-                                 reinterpret_cast<XrSwapchainImageBaseHeader*>(st->images.data()));
+                                 reinterpret_cast<XrSwapchainImageBaseHeader*>(
+                                     st->images.data()));
 
     // Geraet aus dem ersten Image beziehen (im Spielprozess erlaubt)
     ID3D11Texture2D* tex = st->images[0].texture;
@@ -299,7 +289,7 @@ static void InitOverlay(XrSession session, OverlayState* st) {
     st->quad.size = {0.5f, 0.25f};
 
     st->ok = true;
-    Log("Overlay-Init OK (Session %p)", (void*)session);
+    Log("Overlay-Init OK");
 }
 
 // Bild in die Swapchain schreiben
@@ -308,14 +298,13 @@ static void UpdateTexture(OverlayState* st) {
     if (g_xrAcquireSwapchainImage(st->swapchain, nullptr, &idx) != XR_SUCCESS)
         return;
     XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
-    wi.timeout = XR_TIMEOUT_INDEFINITE;
+    wi.timeout = XR_INFINITE_DURATION;
     if (g_xrWaitSwapchainImage(st->swapchain, &wi) != XR_SUCCESS) {
         g_xrReleaseSwapchainImage(st->swapchain, nullptr);
         return;
     }
     FillPixels(st);
-    // PoC: UpdateSubresource auf den Immediate Context. Ein System-Memory-
-    // Copy ist hier implizit (D3D11 legt intern einen Staging-Pfad an).
+    // PoC: UpdateSubresource auf den Immediate Context des Spiels.
     st->context->UpdateSubresource(
         st->images[idx].texture, 0, nullptr,
         st->pixels.data(), kTexWidth * 4, 0);
@@ -339,7 +328,8 @@ static XrResult XRAPI_PTR LayerEndFrame(XrSession session,
     std::vector<const XrCompositionLayerBaseHeader*> layers(
         frameEndInfo->layers, frameEndInfo->layers + frameEndInfo->layerCount);
     if (showQuad) {
-        layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&st->quad));
+        layers.push_back(
+            reinterpret_cast<const XrCompositionLayerBaseHeader*>(&st->quad));
     }
     XrFrameEndInfo fe = *frameEndInfo;
     fe.layerCount = static_cast<uint32_t>(layers.size());
@@ -348,34 +338,43 @@ static XrResult XRAPI_PTR LayerEndFrame(XrSession session,
 }
 
 // ---------------------------------------------------------------------------
-// Loader-Verhandlung (Interface v1)
+// Loader-Verhandlung (Interface v1, siehe openxr_loader_negotiation.h)
 // ---------------------------------------------------------------------------
 
-extern "C" PVR_EXPORT XrResult XRAPI_PTR LayerGetInstanceProcAddr(XrInstance instance,
-                                                   const char* name,
-                                                   PFN_xrVoidFunction* function) {
+extern "C" PVR_EXPORT XrResult XRAPI_PTR LayerGetInstanceProcAddr(
+        XrInstance instance, const char* name, PFN_xrVoidFunction* function) {
     if (!name || !function) return XR_ERROR_VALIDATION_FAILURE;
     if (strcmp(name, "xrEndFrame") == 0) {
         *function = reinterpret_cast<PFN_xrVoidFunction>(&LayerEndFrame);
         return XR_SUCCESS;
     }
-    if (strcmp(name, "xrDestroyInstance") == 0 && g_nextDestroyInstance) {
-        *function = reinterpret_cast<PFN_xrVoidFunction>(g_nextDestroyInstance);
-        return XR_SUCCESS;
-    }
     return g_nextGPA(instance, name, function);
 }
 
-extern "C" PVR_EXPORT XrResult XRAPI_ENTRY xrCreateApiLayerInstance(const XrInstanceCreateInfo* createInfo,
-                                              const XrApiLayerCreateInfo* apiLayerInfo,
-                                              XrInstance* instance) {
-    if (!createInfo || !apiLayerInfo || !instance) return XR_ERROR_VALIDATION_FAILURE;
+extern "C" PVR_EXPORT XrResult XRAPI_CALL xrCreateApiLayerInstance(
+        const XrInstanceCreateInfo* createInfo,
+        const XrApiLayerCreateInfo* apiLayerInfo,
+        XrInstance* instance) {
+    if (!createInfo || !apiLayerInfo || !instance) {
+        return XR_ERROR_VALIDATION_FAILURE;
+    }
+    if (apiLayerInfo->structType != XR_LOADER_INTERFACE_STRUCT_API_LAYER_CREATE_INFO
+        || apiLayerInfo->structVersion != XR_API_LAYER_CREATE_INFO_STRUCT_VERSION
+        || apiLayerInfo->nextInfo == nullptr
+        || apiLayerInfo->nextInfo->nextCreateApiLayerInstance == nullptr
+        || apiLayerInfo->nextInfo->nextGetInstanceProcAddr == nullptr) {
+        return XR_ERROR_VALIDATION_FAILURE;
+    }
 
-    PFN_xrCreateInstance nextCreateInstance = nullptr;
-    apiLayerInfo->nextGetInstanceProcAddr(
-        nullptr, "xrCreateInstance",
-        reinterpret_cast<PFN_xrVoidFunction*>(&nextCreateInstance));
-    if (!nextCreateInstance) return XR_ERROR_INITIALIZATION_FAILED;
+    // Unsere Kette: nächste Instanz-Schöpfung und GPA merken,
+    // danach eigenen Eintrag aus der nextInfo-Kette herausnehmen.
+    PFN_xrCreateApiLayerInstance nextCreate =
+        apiLayerInfo->nextInfo->nextCreateApiLayerInstance;
+    g_nextGPA = apiLayerInfo->nextInfo->nextGetInstanceProcAddr;
+
+    XrApiLayerCreateInfo nextInfo = *apiLayerInfo;
+    nextInfo.nextInfo = apiLayerInfo->nextInfo->next;
+    nextInfo.structSize -= sizeof(XrApiLayerNextInfo);
 
     // XR_KHR_D3D11_enable anfordern, damit wir Swapchain-Images lesen koennen
     XrInstanceCreateInfo ci = *createInfo;
@@ -384,34 +383,29 @@ extern "C" PVR_EXPORT XrResult XRAPI_ENTRY xrCreateApiLayerInstance(const XrInst
         createInfo->enabledExtensionNames + createInfo->enabledExtensionCount);
     bool hasD3D11 = false;
     for (const char* e : exts)
-        if (strcmp(e, XR_KHR_D3D11_ENABLE_EXTENSION_NAME) == 0) hasD3D11 = true;
+        if (e && strcmp(e, XR_KHR_D3D11_ENABLE_EXTENSION_NAME) == 0) hasD3D11 = true;
     if (!hasD3D11) exts.push_back(XR_KHR_D3D11_ENABLE_EXTENSION_NAME);
     ci.enabledExtensionNames = exts.data();
     ci.enabledExtensionCount = static_cast<uint32_t>(exts.size());
 
-    XrResult res = nextCreateInstance(&ci, instance);
+    XrResult res = nextCreate(&ci, &nextInfo, instance);
     if (XR_FAILED(res)) return res;
 
     g_instance = *instance;
-    g_nextGPA = apiLayerInfo->nextGetInstanceProcAddr;
 
-    // Alle benoetigten Runtime-Funktionen GPA-en
-    #define GPA(fn) \
+    // Alle benoetigten Runtime-Funktionen aufloesen
+    #define PVR_GPA(fn) \
         g_nextGPA(g_instance, #fn, reinterpret_cast<PFN_xrVoidFunction*>(&fn))
-    GPA(g_xrEnumerateSwapchainFormats);
-    GPA(g_xrCreateSwapchain);
-    GPA(g_xrEnumerateSwapchainImages);
-    GPA(g_xrAcquireSwapchainImage);
-    GPA(g_xrWaitSwapchainImage);
-    GPA(g_xrReleaseSwapchainImage);
-    GPA(g_xrCreateReferenceSpace);
-    GPA(g_xrDestroySwapchain);
-    GPA(g_xrDestroySpace);
+    PVR_GPA(g_xrEnumerateSwapchainFormats);
+    PVR_GPA(g_xrCreateSwapchain);
+    PVR_GPA(g_xrEnumerateSwapchainImages);
+    PVR_GPA(g_xrAcquireSwapchainImage);
+    PVR_GPA(g_xrWaitSwapchainImage);
+    PVR_GPA(g_xrReleaseSwapchainImage);
+    PVR_GPA(g_xrCreateReferenceSpace);
+    #undef PVR_GPA
     g_nextGPA(g_instance, "xrEndFrame",
               reinterpret_cast<PFN_xrVoidFunction*>(&g_nextEndFrame));
-    g_nextGPA(g_instance, "xrDestroyInstance",
-              reinterpret_cast<PFN_xrVoidFunction*>(&g_nextDestroyInstance));
-    #undef GPA
 
     Log("Layer-Instanz erstellt (%u Erweiterungen)", ci.enabledExtensionCount);
     return res;
