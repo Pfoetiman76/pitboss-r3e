@@ -15,16 +15,21 @@ FetchContent_Declare(
   GIT_TAG        release-1.1.45
   GIT_SHALLOW    TRUE
 )
-FetchContent_GetProperties(openxr)
-if(NOT openxr_POPULATED)
-  FetchContent_Populate(openxr)
-endif()
+# Baut das SDK als Subprojekt (stabil mit modernem CMake; FetchContent_Populate
+# ist ab CMake 3.30+/4.x gesperrt). Wir nutzen nur seine Header, bauen aber das
+# Projekt mit -DBUILD_API_LAYERS=OFF etc. klein.
+set(BUILD_API_LAYERS OFF CACHE BOOL "" FORCE)
+set(BUILD_LOADER OFF CACHE BOOL "" FORCE)
+set(BUILD_ALL_EXTENSIONS OFF CACHE BOOL "" FORCE)
+set(BUILD_CONFORMANCE_TESTS OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(openxr)
 
 add_library(pitboss_vr_layer SHARED pitboss_vr_layer.cpp)
 
 target_include_directories(pitboss_vr_layer PRIVATE
   ${openxr_SOURCE_DIR}/include
   ${openxr_SOURCE_DIR}/src/loader      # xr_loader.h (XrApiLayerCreateInfo)
+  ${openxr_SOURCE_DIR}/src/common      # xr_dependencies.h (von xr_loader.h inkludiert)
 )
 
 target_compile_definitions(pitboss_vr_layer PRIVATE
