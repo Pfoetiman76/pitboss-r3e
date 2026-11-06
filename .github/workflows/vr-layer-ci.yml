@@ -1,0 +1,39 @@
+name: VR-Layer CI
+
+on:
+  push:
+    branches: ['**']
+    paths: ['vr_layer/**']
+  pull_request:
+    paths: ['vr_layer/**']
+  workflow_dispatch: {}
+
+jobs:
+  build-layer:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: CMake konfigurieren (x64)
+        run: cmake -S vr_layer -B vr_layer/build -A x64
+
+      - name: DLL bauen (Release)
+        run: cmake --build vr_layer/build --config Release
+
+      - name: Artefakte pruefen
+        shell: pwsh
+        run: |
+          $dir = "vr_layer\build\Release"
+          if (-not (Test-Path "$dir\XR_APILAYER_PitBossR3E_VR.dll")) { throw "DLL fehlt im Build" }
+          if (-not (Test-Path "$dir\pitboss_vr_layer.json")) { throw "Manifest fehlt im Build" }
+          Get-ChildItem $dir | ForEach-Object { Write-Host ("{0,8:N1} KB  {1}" -f ($_.Length/1KB), $_.Name) }
+
+      - name: Layer-Artefakte hochladen
+        uses: actions/upload-artifact@v4
+        with:
+          name: pitboss-vr-layer
+          path: |
+            vr_layer/build/Release/XR_APILAYER_PitBossR3E_VR.dll
+            vr_layer/build/Release/pitboss_vr_layer.json
+          if-no-files-found: error
