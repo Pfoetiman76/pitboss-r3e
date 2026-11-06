@@ -1,8 +1,8 @@
 # PitBoss R3E VR Layer (0.4.0.0 PoC)
 
 Nativer OpenXR-API-Layer, der eine virtuelle Tafel in die VR-Szene von
-RaceRoom einblendet. Läuft im Spielprozess und funktioniert damit mit jeder
-OpenXR-Runtime – ausdrücklich auch **Virtual Desktop / VDXR ohne SteamVR**.
+RaceRoom einblendet. Laeuft im Spielprozess und funktioniert damit mit jeder
+OpenXR-Runtime - ausdruecklich auch **Virtual Desktop / VDXR ohne SteamVR**.
 
 ## Architektur
 
@@ -26,11 +26,15 @@ Shared-Memory-Protokoll (Version 1), Name `Local\PitBossR3E_VR`:
 | 16     | uint32   | Bildzaehler (pro Frame +1)             |
 | 20     | BGRA[512x256] | Pixel, Zeilen von oben          |
 
-Läuft PitBoss nicht, zeigt der Layer ein Testmuster mit wanderndem Balken
+Laeuft PitBoss nicht, zeigt der Layer ein Testmuster mit wanderndem Balken
 ("Testtafel"). Damit ist der PoC ohne PitBoss in jeder Practice-Session
-prüfbar.
+pruefbar.
 
 ## Bauen
+
+CMake laedt die vier OpenXR-Public-Header (Khronos OpenXR-SDK 1.1.45,
+Apache-2.0/MIT) beim Konfigurieren einmalig von GitHub in den Build-Ordner.
+Kein SDK-Klon, keine Submodule, keine Header-Generierung noetig.
 
 ```
 cmake -S vr_layer -B vr_layer/build -A x64
@@ -57,12 +61,14 @@ System registriert.
 ## PoC-Einschraenkungen (bewusst, Ausbau in Folgeversionen)
 
 - Feste Pose der Tafel im LOCAL-Raum (ueber dem Startpunkt, leicht vorn).
-- Textur-Updates über den Immediate Context des Spiels (D3D11); Ausbau auf
-  einen separaten Renderpfad folgt mit der Blind-Spot-Anzeige.
+- Textur-Updates ueber den Immediate Context des Spiels (D3D11); Ausbau auf
+  einen separaten Renderpfad folgt mit der Toter-Winkel-Anzeige.
 - Eine Session; wird das Spiel ohne VR gestartet, bleibt der Layer still.
-- Monitorfahrer sind unbeeinflusst – der Layer wirkt nur im VR-Prozess.
+- Monitorfahrer sind unbeeinflusst - der Layer wirkt nur im VR-Prozess.
+- Verhandlung: Loader-Interface v1 (xrCreateApiLayerInstance mit nextInfo-
+  Kette, siehe openxr_loader_negotiation.h).
 
 ## Verwandte Dateien
 
-- `blindspot.py` / `test_blindspot.py` – Toter-Winkel-Erkennung (Python)
+- `blindspot.py` / `test_blindspot.py` - Toter-Winkel-Erkennung (Python)
   inklusive Selftests (`python test_blindspot.py`, 25/25 bestanden).
