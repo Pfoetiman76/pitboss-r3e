@@ -33,7 +33,7 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.2.1 Beta"
+APP_VERSION = "0.4.2.2 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -5481,7 +5481,7 @@ class Main(QMainWindow):
         self.brake_model = BrakeWearModel(config_path=str(BRAKE_MODEL_PATH))  # 0.4.9.2
         self.damage_model = DamageModel(config_path=str(DAMAGE_MODEL_PATH))  # 0.4.9.4
         self.tts = SpeechEngine(config_path=str(EXPORT_DIR / "tts_config.json"))  # 0.4.7.2
-        self.tire_overlay_autostart = True
+        self.tire_overlay_autostart = self._load_tire_autostart_pref()  # 0.4.2.2: abschaltbar, Standard AUS
         self._tire_overlay_autoshown = False
         self.auto_bestlap_export_enabled = True
         self.auto_switch_recording_enabled = True  # 0.5.9.24: Auto-Stop/Start bei Strecken-/Fahrzeugwechsel
@@ -5638,6 +5638,11 @@ class Main(QMainWindow):
         _ov.addAction("Alle im Fenster verwalten (bleibt offen) …", self.open_overlay_manager)
         _ov.addSeparator()
         _ov_toggle("Reifen-Overlay", self.toggle_tire_overlay, "tire_overlay_window")
+        # 0.4.2.2: Auto-Oeffnen bei Fahrt abschaltbar (Marcel-Wunsch), Standard AUS
+        self.act_tire_autostart = _ov.addAction("Reifen-Overlay automatisch öffnen (bei Fahrt)")
+        self.act_tire_autostart.setCheckable(True)
+        self.act_tire_autostart.setChecked(bool(self.tire_overlay_autostart))
+        self.act_tire_autostart.toggled.connect(self.set_tire_autostart)
         _ov_toggle("Pedal-Overlay", self.toggle_pedal_overlay, "pedal_overlay_window")
         _ov_toggle("Monitor-Overlay", self.toggle_overlay, "overlay_window")
         _ov.addSeparator()
@@ -7059,6 +7064,44 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         if b is not None and not b.isChecked():
             b.setChecked(True)
 
+    def _load_tire_autostart_pref(self):
+        """0.4.2.2: 'Reifen-Overlay automatisch oeffnen' laden (overlay_prefs.json).
+        Standard: AUS - das Overlay oeffnet sich nur noch per F6, Button oder Menue."""
+        try:
+            raw = json.loads((EXPORT_DIR / "overlay_prefs.json").read_text(encoding="utf-8"))
+            return bool(raw.get("tire_autostart", False)) if isinstance(raw, dict) else False
+        except Exception:
+            return False
+
+    def set_tire_autostart(self, on):
+        """0.4.2.2: Automatisches Oeffnen des Reifen-Overlays bei Fahrt-Erkennung
+        an/aus (Overlays-Menue, wird in overlay_prefs.json gespeichert)."""
+        on = bool(on)
+        self.tire_overlay_autostart = on
+        try:
+            pref_path = EXPORT_DIR / "overlay_prefs.json"
+            data = {}
+            try:
+                loaded = json.loads(pref_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    data = loaded
+            except Exception:
+                pass
+            data["tire_autostart"] = on
+            pref_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except Exception as e:
+            try:
+                self.log.append(f"Hinweis: Einstellung konnte nicht gespeichert werden: {e}")
+            except Exception:
+                pass
+        try:
+            if on:
+                self.log.append("Reifen-Overlay wird bei Fahrt-Erkennung automatisch geöffnet.")
+            else:
+                self.log.append("Reifen-Overlay wird nicht mehr automatisch geöffnet (nur " + self.hotkey_config.get("tire_overlay", "F6") + ", Button oder Menü).")
+        except Exception:
+            pass
+
     def maybe_autoshow_tire_overlay(self, s):
         # Overlay einmal pro Sitzung automatisch oeffnen, sobald der Fahrer auf der Strecke ist.
         # Danach bleibt es dem Nutzer ueberlassen (Button/F6). Kein erneutes Aufpoppen nach Schliessen.
@@ -7947,6 +7990,26 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         except Exception:
             pass
 
+    def vr_arrange_select(self, idx):
+        """0.4.2.2: Overlay per Nummer auswaehlen (Strg+Alt+1..9). Startet den
+        Anordnen-Modus, falls er noch nicht laeuft; danach gelten die bekannten
+        Anordnen-Tasten (Pfeile, Groesse, Abstand, Kippen) fuer das gewaehlte
+        Overlay. Die Nummern folgen der Reihenfolge im Overlays-Menue."""
+        try:
+            ws = self.vr_arrange_targets()
+            idx = int(idx)
+            if not ws or idx < 0 or idx >= len(ws):
+                return
+            if not getattr(self, "_vr_arrange", False):
+                self.toggle_vr_arrange(True)
+            self._vr_arrange_idx = idx
+            try:
+                self.log.append(f"VR-Anordnen: Overlay {idx + 1} von {len(ws)} ausgewählt ({self.vr_arrange_label(ws[idx])}).")
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     def vr_arrange_next(self):
         ws = self.vr_arrange_targets()
         if not ws:
@@ -8061,7 +8124,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 pass
         try:
             if on:
-                self.log.append("VR-Anordnen aktiv: Pfeiltasten = verschieben (Shift = fein), Bild auf/ab = Groesse, Einfg/Entf = Abstand, Pos1/Ende = vertikal kippen, Komma/Punkt = horizontal kippen, Leertaste = naechstes Overlay, " + str(self.hotkey_config.get("vr_arrange", "F4")) + " = Modus aus.")
+                self.log.append("VR-Anordnen aktiv: Pfeiltasten = verschieben (Shift = fein), Bild auf/ab = Groesse, Einfg/Entf = Abstand, Pos1/Ende = vertikal kippen, Komma/Punkt = horizontal kippen, Leertaste = naechstes Overlay, Strg+Alt+1..9 = Overlay direkt auswählen, " + str(self.hotkey_config.get("vr_arrange", "F4")) + " = Modus aus.")
             else:
                 self.log.append("VR-Anordnen aus.")
         except Exception:
@@ -9075,9 +9138,14 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             "corner_overlay": self.toggle_corner_name_overlay,
             "vr_arrange": self.toggle_vr_arrange,
         }
+        # 0.4.2.2: Strg+Alt+Ziffer reserviert fuer die VR-Overlay-Auswahl -
+        # Ziffern-Aktionen feuern dann nicht doppelt.
+        _sel_mod = self._vk_down(0x11) and self._vk_down(0x12)  # VK_CONTROL + VK_MENU
         for action, key in self.hotkey_config.items():
             vk = hotkey_vk(key)
             if vk is None:
+                continue
+            if _sel_mod and str(key).isdigit():
                 continue
             down = self._vk_down(vk)
             was_down = self.global_hotkey_state.get(key, False)
@@ -9086,6 +9154,18 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 if handler is not None:
                     handler()
             self.global_hotkey_state[key] = down
+        # 0.4.2.2: Strg+Alt+1..9 = Overlay N im Anordnen-Modus auswaehlen
+        if _sel_mod:
+            for idx in range(1, 10):
+                vk = 0x30 + idx  # VK_1..VK_9
+                down = self._vk_down(vk)
+                was_down = self.global_hotkey_state.get("vr_sel_%d" % idx, False)
+                if down and not was_down:
+                    self.vr_arrange_select(idx - 1)
+                self.global_hotkey_state["vr_sel_%d" % idx] = down
+        else:
+            for idx in range(1, 10):
+                self.global_hotkey_state["vr_sel_%d" % idx] = False
         # 0.4.1.0: Tasten des Anordnen-Modus - nur solange der Modus aktiv
         # ist (Pfeile, Bild auf/ab, Leertaste; Shift = Feinschritt).
         if getattr(self, "_vr_arrange", False):
