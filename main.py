@@ -33,7 +33,7 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.2.3 Beta"
+APP_VERSION = "0.4.2.4 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -7588,6 +7588,12 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         if win.isVisible():
             win.hide(); self.log.append(f"{name} ausgeblendet.")
         else:
+            # 0.4.2.4: Auto-Sperre der Pit-Automatik beim manuellen Oeffnen
+            # aufheben, damit die Tafel wieder gespiegelt wird.
+            try:
+                win._pit_auto_hidden = False
+            except Exception:
+                pass
             win.update_from_main(self); win.show(); win.raise_()
             self.log.append(f"{name} geoeffnet.")
         self._sync_overlay_menu_checks()  # 0.3.2.0: Haken im Menue nachziehen
@@ -8355,6 +8361,11 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 if mode == "monitor":
                     skipped += 1
                     continue
+                # 0.4.2.4: Von der Boxengassen-Automatik geschlossene Pit-Tafel
+                # bleibt auch im "Nur VR"-Modus unsichtbar.
+                if getattr(w, "_pit_auto_hidden", False):
+                    skipped += 1
+                    continue
                 # "nur VR" (Modus VR): Fenster ist am Monitor versteckt,
                 # wird hier aber trotzdem gespiegelt (grab rendert hidden).
                 if not w.isVisible() and mode != "vr":
@@ -8600,22 +8611,47 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
 
     def maybe_autoshow_pit_overlay(self, s):
         """0.4.9.1: Pit-Overlay automatisch beim Einfahren zeigen und beim
-        Verlassen wieder schliessen (nur wenn es automatisch geoeffnet wurde)."""
+        Verlassen wieder schliessen (nur wenn es automatisch geoeffnet wurde).
+        0.4.2.4: Modus-bewusst - bei 'Nur VR' bleibt das Fenster am Monitor
+        unsichtbar (kein show(), das wuerde den Nur-VR-Modus am Monitor
+        brechen); der Spiegel zeigt die Tafel, solange _pit_auto_hidden
+        False ist. Beim Verlassen wird das Flag gesetzt, damit sie AUCH in
+        der VR verschwindet - hide() allein reicht im Nur-VR-Modus nicht,
+        weil der Spiegel versteckte Fenster dieses Modus absichtlich
+        mitnimmt."""
         try:
             in_pit = bool(getattr(s, "in_pits", False)) or int(getattr(s, "pit_state", 0) or 0) in (1, 2, 3, 4)
         except Exception:
             return
         win = self.pit_overlay_window
+        try:
+            _mode = vr_overlay.mode_of(vr_overlay.load_config(VR_CONFIG_PATH), "PitOverlayWindow")
+        except Exception:
+            _mode = "both"
         if in_pit:
             if win is None:
                 win = PitOverlayWindow(); self.pit_overlay_window = win
                 win.apply_overlay_style(self.overlay_style)
-            if not win.isVisible():
+            if _mode == "vr":
+                # Nur VR: Fenster bleibt am Monitor unsichtbar; das Flag
+                # steuert die Spiegel-Anzeige, Werte laufen weiter.
+                if not getattr(win, "auto_opened", False):
+                    win.auto_opened = True
+                    win._pit_auto_hidden = False
+                    win.hide()
+                    win.update_from_main(self)
+                    self.log.append("Boxengasse erkannt \u2013 Pit-Overlay automatisch in der VR geoeffnet.")
+                elif not getattr(win, "_pit_auto_hidden", False):
+                    win.update_from_main(self)
+            elif not win.isVisible():
                 win.auto_opened = True
+                win._pit_auto_hidden = False
                 win.update_from_main(self); win.show(); win.raise_()
                 self.log.append("Boxengasse erkannt \u2013 Pit-Overlay automatisch geoeffnet.")
-        elif win is not None and win.isVisible() and getattr(win, "auto_opened", False):
+        elif win is not None and getattr(win, "auto_opened", False) and (
+                win.isVisible() or (_mode == "vr" and not getattr(win, "_pit_auto_hidden", True))):
             win.hide(); win.auto_opened = False
+            win._pit_auto_hidden = True
             self.log.append("Boxengasse verlassen \u2013 Pit-Overlay automatisch geschlossen.")
 
     def toggle_brake_overlay(self):
@@ -8664,13 +8700,29 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         self._sync_overlay_menu_checks()  # 0.3.2.0
 
     def refresh_overlay(self):
-        if self.overlay_window is not None and self.overlay_window.isVisible():
+        # 0.4.2.4: "Nur VR"-Fenster sind am Monitor versteckt und bekamen bisher
+        # KEINE Wert-Aktualisierung (Inhalt blieb stehen). Sie werden jetzt
+        # genauso versorgt - ausser der von der Boxengassen-Automatik
+        # geschlossenen Pit-Tafel (_pit_auto_hidden, siehe maybe_autoshow).
+        try:
+            _vronly_names = vr_overlay.vronly_classes(vr_overlay.load_config(VR_CONFIG_PATH))
+        except Exception:
+            _vronly_names = set()
+
+        def _ov_open(w):
+            try:
+                return (w is not None and (w.isVisible() or (
+                    type(w).__name__ in _vronly_names and not getattr(w, "_pit_auto_hidden", False))))
+            except Exception:
+                return False
+
+        if _ov_open(self.overlay_window):
             self.overlay_window.update_from_main(self)
-        if self.tire_overlay_window is not None and self.tire_overlay_window.isVisible():
+        if _ov_open(self.tire_overlay_window):
             self.tire_overlay_window.update_from_main(self)
-        if self.pedal_overlay_window is not None and self.pedal_overlay_window.isVisible():
+        if _ov_open(self.pedal_overlay_window):
             self.pedal_overlay_window.update_from_main(self)
-        if self.limit_overlay_window is not None and self.limit_overlay_window.isVisible():
+        if _ov_open(self.limit_overlay_window):
             self.limit_overlay_window.update_from_main(self)
         for _a in ("brake_overlay_window",
                    "fuel_overlay_window", "ffb_overlay_window",
@@ -8679,7 +8731,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                    "flag_overlay_window", "lapgraph_overlay_window", "overtake_overlay_window",
                    "blindspot_overlay_window"):
             _w = getattr(self, _a, None)
-            if _w is not None and _w.isVisible():
+            if _ov_open(_w):
                 _w.update_from_main(self)
         # 0.4.0.0: VR-Spiegel - Monitor 1:1 in die VR (max. 20 Hz)
         self._vr_mirror_tick()
