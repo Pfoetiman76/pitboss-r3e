@@ -258,6 +258,16 @@ static void InitOverlay(XrSession session, OverlayState* st) {
     st->ok = false;
     Log("xrEndFrame zum ersten Mal gesehen - Overlay-Init startet");
 
+    // Nullzeiger-Schutz: Ohne aufgeloeste Runtime-Funktionen wuerde der erste
+    // Aufruf den Prozess crashen statt kontrolliert abzubrechen.
+    if (!g_xrEnumerateSwapchainFormats || !g_xrCreateSwapchain
+        || !g_xrEnumerateSwapchainImages || !g_xrAcquireSwapchainImage
+        || !g_xrWaitSwapchainImage || !g_xrReleaseSwapchainImage
+        || !g_xrCreateReferenceSpace || !g_nextEndFrame) {
+        Log("Runtime-Funktionen nicht aufgeloest - Overlay-Init abgebrochen");
+        return;
+    }
+
     uint32_t count = 0;
     if (g_xrEnumerateSwapchainFormats(session, 0, &count, nullptr) != XR_SUCCESS
         || count == 0) {
@@ -389,7 +399,7 @@ static XrResult XRAPI_PTR LayerEndFrame(XrSession session,
 // ---------------------------------------------------------------------------
 
 // Vorwaertsdeklaration: openxr_loader_negotiation.h deklariert
-// xrCreateApiLayerInterface nur bei definiertem XR_EXTENSION_PROTOTYPES
+// xrCreateApiLayerInstance nur bei definiertem XR_EXTENSION_PROTOTYPES
 // (nicht gesetzt). xrNegotiateLoaderApiLayerInterface unten referenziert die
 // Funktion, bevor sie im Quelltext definiert wird - ohne Deklaration
 // compiliert MSVC das nicht (C2065).
@@ -403,7 +413,7 @@ extern "C" PVR_EXPORT XrResult XRAPI_PTR LayerGetInstanceProcAddr(
     if (!name || !function) return XR_ERROR_VALIDATION_FAILURE;
     if (!g_targetProcess) g_targetProcess = IsRaceRoomProcess();
     if (g_targetProcess && strcmp(name, "xrEndFrame") == 0) {
-        *function = reinterpret_cast<PFN_xrVoidFunction>(&LayerEndFrame);
+        *function = reinterpret_cast<PFN_xrVoidFunction*>(&LayerEndFrame);
         return XR_SUCCESS;
     }
     return g_nextGPA(instance, name, function);
@@ -484,16 +494,35 @@ extern "C" PVR_EXPORT XrResult XRAPI_CALL xrCreateApiLayerInstance(
 
     g_instance = *instance;
 
-    // Alle benoetigten Runtime-Funktionen aufloesen
-#define PVR_GPA(fn) g_nextGPA(g_instance, #fn, reinterpret_cast<PFN_xrVoidFunction*>(&fn))
-    PVR_GPA(g_xrEnumerateSwapchainFormats);
-    PVR_GPA(g_xrCreateSwapchain);
-    PVR_GPA(g_xrEnumerateSwapchainImages);
-    PVR_GPA(g_xrAcquireSwapchainImage);
-    PVR_GPA(g_xrWaitSwapchainImage);
-    PVR_GPA(g_xrReleaseSwapchainImage);
-    PVR_GPA(g_xrCreateReferenceSpace);
-#undef PVR_GPA
+    // Alle benoetigten Runtime-Funktionen aufloesen. WICHTIG:
+    // xrGetInstanceProcAddr erwartet die OFFIZIELLEN OpenXR-Namen. Ein Makro
+    // ueber #fn wuerde den Variablennamen ("g_xrEnumerateSwapchainFormats")
+    // uebergeben - die Funktion wird dann nicht gefunden, der Zeiger bleibt
+    // null und der Overlay-Init scheitert beim ersten Aufruf (Vorfall
+    // 07.11.2026: Praxistest-Log brach nach "Overlay-Init startet" ab).
+    struct GpaEntry { const char* name; PFN_xrVoidFunction* target; };
+    GpaEntry gpaTable[] = {
+        {"xrEnumerateSwapchainFormats",
+         reinterpret_cast<PFN_xrVoidFunction*>(&g_xrEnumerateSwapchainFormats)},
+        {"xrCreateSwapchain",
+         reinterpret_cast<PFN_xrVoidFunction*>(&g_xrCreateSwapchain)},
+        {"xrEnumerateSwapchainImages",
+         reinterpret_cast<PFN_xrVoidFunction*>(&g_xrEnumerateSwapchainImages)},
+        {"xrAcquireSwapchainImage",
+         reinterpret_cast<PFN_xrVoidFunction*>(&g_xrAcquireSwapchainImage)},
+        {"xrWaitSwapchainImage",
+         reinterpret_cast<PFN_xrVoidFunction*>(&g_xrWaitSwapchainImage)},
+        {"xrReleaseSwapchainImage",
+         reinterpret_cast<PFN_xrVoidFunction*>(&g_xrReleaseSwapchainImage)},
+        {"xrCreateReferenceSpace",
+         reinterpret_cast<PFN_xrVoidFunction*>(&g_xrCreateReferenceSpace)},
+    };
+    for (const GpaEntry& e : gpaTable) {
+        XrResult gpaResult = g_nextGPA(g_instance, e.name, e.target);
+        if (XR_FAILED(gpaResult)) {
+            Log("Aufloesung fehlgeschlagen: %s (%d)", e.name, (int)gpaResult);
+        }
+    }
     if (g_targetProcess) {
         g_nextGPA(g_instance, "xrEndFrame",
                   reinterpret_cast<PFN_xrVoidFunction*>(&g_nextEndFrame));
