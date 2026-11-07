@@ -21,6 +21,9 @@
 //   Prozess (Zielprozess-Filter unten) und verhaelt sich in allen anderen
 //   OpenXR-Anwendungen vollstaendig passiv.
 //
+// Diagnose: jede Log-Meldung wird nach %TEMP%\PitBossVR_layer.log
+//   geschrieben (PoC-Hilfsmittel; wird mit der Integration entfernt).
+//
 // Verhandlung: Loader-Interface v1 (xrCreateApiLayerInstance + nextInfo-
 // Kette), siehe openxr_loader_negotiation.h (mitgeliefert unter third_party).
 //
@@ -60,22 +63,33 @@
 #endif
 
 // ---------------------------------------------------------------------------
-// Logging (DebugView; im Normalfall still)
+// Logging: DebugView (nur mit PVR_DEBUG) UND immer %TEMP%\PitBossVR_layer.log
 // ---------------------------------------------------------------------------
 
 static void Log(const char* fmt, ...) {
-#ifdef PVR_DEBUG
     char buf[512];
     va_list args;
     va_start(args, fmt);
     _vsnprintf_s(buf, sizeof(buf), _TRUNCATE, fmt, args);
     va_end(args);
+#ifdef PVR_DEBUG
     OutputDebugStringA("[PitBossVR] ");
     OutputDebugStringA(buf);
     OutputDebugStringA("\n");
-#else
-    (void)fmt;
 #endif
+    char path[MAX_PATH];
+    if (GetTempPathA(MAX_PATH, path) == 0) return;
+    strcat_s(path, MAX_PATH, "PitBossVR_layer.log");
+    HANDLE h = CreateFileA(path, FILE_APPEND_DATA,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                           OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return;
+    char line[620];
+    _snprintf_s(line, sizeof(line), _TRUNCATE, "[%lu] %s\r\n",
+                GetTickCount(), buf);
+    DWORD written = 0;
+    WriteFile(h, line, (DWORD)strlen(line), &written, nullptr);
+    CloseHandle(h);
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +253,7 @@ static void FillPixels(OverlayState* st) {
 static void InitOverlay(XrSession session, OverlayState* st) {
     st->initialized = true;
     st->ok = false;
+    Log("xrEndFrame zum ersten Mal gesehen - Overlay-Init startet");
 
     uint32_t count = 0;
     if (g_xrEnumerateSwapchainFormats(session, 0, &count, nullptr) != XR_SUCCESS
@@ -259,6 +274,7 @@ static void InitOverlay(XrSession session, OverlayState* st) {
     prefer(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB);  // 29
     prefer(DXGI_FORMAT_R8G8B8A8_UNORM);       // 28
     if (!chosen) { Log("kein BGRA/RGBA-Format gefunden"); return; }
+    Log("Texturformat gewaehlt: %lld", (long long)chosen);
 
     XrSwapchainCreateInfo sci{XR_TYPE_SWAPCHAIN_CREATE_INFO};
     sci.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT
@@ -270,8 +286,9 @@ static void InitOverlay(XrSession session, OverlayState* st) {
     sci.arraySize = 1;
     sci.mipCount = 1;
     sci.sampleCount = 1;
-    if (g_xrCreateSwapchain(session, &sci, &st->swapchain) != XR_SUCCESS) {
-        Log("xrCreateSwapchain fehlgeschlagen");
+    XrResult r = g_xrCreateSwapchain(session, &sci, &st->swapchain);
+    if (r != XR_SUCCESS) {
+        Log("xrCreateSwapchain fehlgeschlagen (%d)", (int)r);
         return;
     }
 
@@ -283,6 +300,7 @@ static void InitOverlay(XrSession session, OverlayState* st) {
     g_xrEnumerateSwapchainImages(st->swapchain, imgCount, &imgCount,
                                  reinterpret_cast<XrSwapchainImageBaseHeader*>(
                                      st->images.data()));
+    Log("Swapchain mit %u Images erstellt", imgCount);
 
     // Geraet aus dem ersten Image beziehen (im Spielprozess erlaubt)
     ID3D11Texture2D* tex = st->images[0].texture;
@@ -315,7 +333,7 @@ static void InitOverlay(XrSession session, OverlayState* st) {
     st->quad.size = {0.5f, 0.25f};
 
     st->ok = true;
-    Log("Overlay-Init OK");
+    Log("Overlay-Init OK - Tafel wird ab jetzt eingereicht");
 }
 
 // Bild in die Swapchain schreiben
@@ -394,6 +412,8 @@ extern "C" PVR_EXPORT XrResult XRAPI_CALL xrCreateApiLayerInstance(
     }
 
     if (!g_targetProcess) g_targetProcess = IsRaceRoomProcess();
+    Log("xrCreateApiLayerInstance aufgerufen (Zielprozess=%d)",
+        g_targetProcess ? 1 : 0);
 
     // Unsere Kette: naechste Instanz-Schoepfung und GPA merken,
     // danach eigenen Eintrag aus der nextInfo-Kette herausnehmen.
@@ -419,6 +439,8 @@ extern "C" PVR_EXPORT XrResult XRAPI_CALL xrCreateApiLayerInstance(
     ci.enabledExtensionCount = static_cast<uint32_t>(exts.size());
 
     XrResult res = nextCreate(&ci, &nextInfo, instance);
+    Log("nextCreateApiLayerInstance: Ergebnis %d (%u Erweiterungen)",
+        (int)res, ci.enabledExtensionCount);
     if (XR_FAILED(res)) return res;
 
     g_instance = *instance;
@@ -437,10 +459,9 @@ extern "C" PVR_EXPORT XrResult XRAPI_CALL xrCreateApiLayerInstance(
     if (g_targetProcess) {
         g_nextGPA(g_instance, "xrEndFrame",
                   reinterpret_cast<PFN_xrVoidFunction*>(&g_nextEndFrame));
+        Log("xrEndFrame-Hook installiert");
     }
 
-    Log("Layer-Instanz erstellt (Zielprozess=%d, %u Erweiterungen)",
-        g_targetProcess ? 1 : 0, ci.enabledExtensionCount);
     return res;
 }
 
@@ -449,10 +470,16 @@ extern "C" PVR_EXPORT XrResult XRAPI_CALL xrCreateApiLayerInstance(
 // ---------------------------------------------------------------------------
 
 BOOL APIENTRY DllMain(HMODULE, DWORD reason, LPVOID) {
+    if (reason == DLL_PROCESS_ATTACH) {
+        char proc[MAX_PATH] = {0};
+        GetModuleFileNameA(nullptr, proc, MAX_PATH);
+        Log("Layer-DLL geladen, Prozess: %s", proc);
+    }
     if (reason == DLL_PROCESS_DETACH) {
         std::lock_guard<std::mutex> lock(g_stateMutex);
         for (auto& kv : g_sessions) CloseShm(&kv.second);
         g_sessions.clear();
+        Log("Layer-DLL entladen");
     }
     return TRUE;
 }
