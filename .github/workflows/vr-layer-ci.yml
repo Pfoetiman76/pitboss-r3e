@@ -43,10 +43,16 @@ jobs:
         id: check
         shell: pwsh
         run: |
-          $dir = "vr_layer\build\Release"
-          if (-not (Test-Path "$dir\XR_APILAYER_PitBossR3E_VR.dll")) { throw "DLL fehlt im Build" }
-          if (-not (Test-Path "$dir\pitboss_vr_layer.json")) { throw "Manifest fehlt im Build" }
-          Get-ChildItem $dir | ForEach-Object { Write-Host ("{0,8:N1} KB  {1}" -f ($_.Length/1KB), $_.Name)
+          $ErrorActionPreference = 'Stop'
+          try {
+            $dir = "vr_layer\build\Release"
+            Get-ChildItem $dir | ForEach-Object { Write-Host ("{0,8:N1} KB  {1}" -f ($_.Length/1KB), $_.Name) }
+            if (-not (Test-Path "$dir\XR_APILAYER_PitBossR3E_VR.dll")) { throw "DLL fehlt im Build" }
+            if (-not (Test-Path "$dir\pitboss_vr_layer.json")) { throw "Manifest fehlt im Build" }
+          } catch {
+            ("FEHLER: " + $_ | Out-String) | Tee-Object -FilePath check.log
+            exit 1
+          }
 
       - name: Layer-Artefakte hochladen
         id: upload
@@ -73,7 +79,7 @@ jobs:
           $nl = [string][char]10
           $outcomes = "Schritt-Ergebnisse: configure=${{ steps.configure.outcome }} build=${{ steps.build.outcome }} check=${{ steps.check.outcome }} upload=${{ steps.upload.outcome }}"
           $parts = @()
-          foreach ($f in @("ci.log", "build.log")) {
+          foreach ($f in @("ci.log", "build.log", "check.log")) {
             if (Test-Path $f) {
               $tail = (Get-Content $f | Select-Object -Last 60) -join $nl
               $parts += ("### " + $f + $nl + $fence + $nl + $tail + $nl + $fence)
