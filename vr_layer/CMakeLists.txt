@@ -9,6 +9,11 @@ project(pitboss_vr_layer LANGUAGES CXX)
 # Build-Ordner geladen. Kein SDK-Subprojekt, keine Submodule, keine
 # Generierung noetig - der PoC braucht nur die Header.
 #
+# WICHTIG: raw.githubusercontent.com wird von GitHub-Runnern zeitweise
+# gedrosselt (429), was den CMake-Configure-Schritt abbrechen kann
+# (Vorfall 07.11.2026). Deshalb werden zwei Spiegel der Reihe nach
+# probiert (jsDelivr-CDN zuerst), mit Timeout und Fehlermeldung.
+#
 # CRT: Statisch gelinkt (/MT), damit die DLL keine MSVCP140/VCRUNTIME140-
 # Abhaengigkeiten hat und auf jedem System laed (der OpenXR-Loader
 # ueberspringt Layer stillschweigend, wenn LoadLibrary fehlschlaegt).
@@ -20,16 +25,25 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
 
 set(PVR_OPENXR_DIR ${CMAKE_BINARY_DIR}/third_party/openxr)
-set(PVR_OPENXR_BASE
-    "https://raw.githubusercontent.com/KhronosGroup/OpenXR-SDK/release-1.1.45/include/openxr")
 
 foreach(hdr openxr_platform_defines.h openxr.h openxr_platform.h openxr_loader_negotiation.h)
   if(NOT EXISTS ${PVR_OPENXR_DIR}/${hdr})
-    message(STATUS "Lade OpenXR-Header: ${hdr}")
-    file(DOWNLOAD ${PVR_OPENXR_BASE}/${hdr} ${PVR_OPENXR_DIR}/${hdr}
-         SHOW_PROGRESS STATUS dl_status)
-    list(GET dl_status 0 dl_code)
-    if(NOT dl_code EQUAL 0)
+    set(PVR_DL_OK FALSE)
+    foreach(mirror
+        "https://cdn.jsdelivr.net/gh/KhronosGroup/OpenXR-SDK@release-1.1.45/include/openxr"
+        "https://raw.githubusercontent.com/KhronosGroup/OpenXR-SDK/release-1.1.45/include/openxr")
+      message(STATUS "Lade OpenXR-Header: ${hdr} (${mirror})")
+      file(DOWNLOAD ${mirror}/${hdr} ${PVR_OPENXR_DIR}/${hdr}
+           TIMEOUT 60 INACTIVITY_TIMEOUT 30 STATUS dl_status)
+      list(GET dl_status 0 dl_code)
+      if(dl_code EQUAL 0)
+        set(PVR_DL_OK TRUE)
+        break()
+      endif()
+      message(STATUS "Spiegel fehlgeschlagen (${dl_status}), naechster Spiegel...")
+      file(REMOVE ${PVR_OPENXR_DIR}/${hdr})
+    endforeach()
+    if(NOT PVR_DL_OK)
       message(FATAL_ERROR "Download fehlgeschlagen fuer ${hdr}: ${dl_status}")
     endif()
   endif()
