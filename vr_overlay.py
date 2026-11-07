@@ -1,26 +1,34 @@
 # -*- coding: utf-8 -*-
 """
-PitBoss R3E - VR-Overlay (Toter-Winkel-Tafel)
-=============================================
-Schreibt das Bild der VR-Tafel in das Shared Memory, aus dem der OpenXR-
-API-Layer im Spiel (XR_APILAYER_PitBossR3E_VR.dll, siehe vr_layer/) liest.
+PitBoss R3E - VR-Overlay: Monitor-Spiegel (PBVR v2)
+===================================================
+Schreibt die VR-Leinwand in das Shared Memory, aus dem der OpenXR-API-Layer
+im Spiel (XR_APILAYER_PitBossR3E_VR.dll, siehe vr_layer/) liest.
 
-PBVR-Protokoll v1 (identisch zum Layer, siehe vr_layer/README.md):
-  Header, 5 x uint32 im Little-Endian-Layout:
+PBVR-Protokoll v2 (identisch zum Layer, siehe vr_layer/README.md):
+  Header, Little-Endian ("5I5f", 40 Bytes):
     [0] magic   = 0x52564250  ("PBVR" little-endian)
-    [1] version = 1
-    [2] width   = 512
-    [3] height  = 256
-    [4] frame   = laufende Bildnummer (Lebenszeichen/Diagnose)
-  Danach: width * height Pixel, je 4 Bytes in der Reihenfolge B, G, R, A.
+    [1] version = 2           (1 = alte Einzeltafel, bleibt lesbar)
+    [2] width   = Leinwandbreite  (z. B. 1920, gedeckelt bei 4096)
+    [3] height  = Leinwandhoehe  (z. B. 1080)
+    [4] frame   = laufende Bildnummer; der Layer aktualisiert die Textur
+                  NUR bei neuem Zaehler (Performance-Schutz, ~20 Hz)
+    [5] quadW   = Tafelbreite in Metern (VR)
+    [6] quadH   = Tafelhoehe in Metern (aus dem Leinwand-Seitenverhaeltnis)
+    [7] posX    = Position im LOCAL-Raum
+    [8] posY    = Hoehe ueber dem Blickpunkt
+    [9] posZ    = Abstand vor dem Fahrer (negativ)
+  Danach: width * height Pixel, je 4 Bytes B, G, R, A (QImage.Format_ARGB32
+  liefert genau dieses Layout - der Monitor-Spiegel komponiert die
+  Overlay-Fenster also per QPainter direkt auf die Leinwand).
 
-Der Layer prueft magic/version/masse und kopiert die Pixel in seine Swapchain.
-Laeuft PitBoss nicht (oder ist das Mapping weg), zeigt der Layer sein
-Testmuster mit wanderndem Balken - die Tafel bleibt also immer sichtbar.
+Konzept "Monitor 1:1" (Marcels Ziel, 07.11.2026): Die Leinwand entspricht der
+Bildschirmflaeche, jedes offene Desktop-Overlay wird an seiner Monitor-
+Position gespiegelt. Fenster verschieben/skalieren/Deckkraft/zumachen am
+Desktop wirkt sofort in der VR; der Layer zeigt ohne PitBoss sein Testmuster.
 
-Dieses Modul ist absichtlich frei von PySide6: Shared-Memory-Anlage,
-Toter-Winkel-Berechnung und Bild-Renderer sind pur und per Selftest
-(test_vr_overlay.py) pruefbar.
+Dieses Modul ist absichtlich frei von PySide6 (Protokoll, Geometrie und
+Shared Memory sind pur und per Selftest pruefbar).
 """
 
 import ctypes
@@ -33,255 +41,126 @@ import sys
 # ---------------------------------------------------------------------------
 
 MAGIC = 0x52564250          # "PBVR" little-endian
-PROTOCOL_VERSION = 1
-BOARD_W = 512
-BOARD_H = 256
-HEADER_FMT = "<5I"          # magic, version, width, height, frame
-HEADER_SIZE = struct.calcsize(HEADER_FMT)
-MAPPING_NAME = "Local\\PitBossR3E_VR"   # sitzungsgleich mit dem Spielprozess
+PROTOCOL_VERSION = 2         # PBVR v2 = Monitor-Spiegel
+PROTOCOL_V1 = 1              # alte Einzeltafel (bleibt lesbar)
+HEADER_FMT = "<5I5f"         # magic, version, w, h, frame + 5 Pose-Floats
+HEADER_SIZE = struct.calcsize(HEADER_FMT)   # 40
+MAPPING_NAME = "Local\\PitBossR3E_VR"       # sitzungsgleich mit dem Spielprozess
+
+MAX_CANVAS = 4096            # Deckel des Layers gegen defekte Header
+CAP_W, CAP_H = 2560, 1440    # Speicherdeckel der Leinwand (Monitor-Spiegel)
+REFRESH_S = 0.05             # max. 20 Spiegel-Bilder pro Sekunde
 
 _PAGE_READWRITE = 0x04
 _FILE_MAP_ALL_ACCESS = 0xF001F
 
 # ---------------------------------------------------------------------------
-# Konfiguration (vr_overlay.json: aktiv + Leinwand-Rahmen)
+# Konfiguration (vr_overlay.json)
 # ---------------------------------------------------------------------------
 
+DEFAULTS = {
+    "enabled": False,
+    "show_frame": True,       # schraffierter Leinwand-Rahmen
+    "vr_width_m": 1.6,        # Tafelbreite in der VR (Regler)
+    "vr_height_m": 0.35,      # Hoehe ueber dem Blickpunkt (Regler)
+    "vr_dist_m": 1.2,         # Abstand vor dem Fahrer (Regler, positiv)
+    "vr_opacity": 100,        # globale Deckkraft in Prozent (Regler)
+    "vr_hidden": [],          # Overlay-Klassen, die nicht gespiegelt werden
+}
+
+
 def load_config(path) -> dict:
+    """Gespeicherte Konfiguration, gemischt mit den Standardwerten."""
+    cfg = dict(DEFAULTS)
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
-
-def save_config(path, updates: dict) -> dict:
-    cfg = load_config(path)
-    cfg.update(updates)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            for k, v in data.items():
+                if k in DEFAULTS:
+                    cfg[k] = v
     except Exception:
         pass
     return cfg
 
+
+def save_config(path, updates: dict) -> dict:
+    """Einzelne Werte ergaenzen/ueberschreiben und zurueckschreiben."""
+    try:
+        data = load_config(path)
+        data.update(updates)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+    return load_config(path)
+
 # ---------------------------------------------------------------------------
-# Toter-Winkel-Tracker
+# Geometrie (bildschirmunabhaengig testbar)
 # ---------------------------------------------------------------------------
 
-class BlindSpotTracker:
-    """Zustandstracker fuer die VR-Tafel. Bewusst dieselbe Heuristik wie das
-    Desktop-Overlay (BlindSpotOverlayWindow in main.py): Das Shared Memory
-    liefert keine verlaessliche Fahrzeug-Orientierung, deshalb wird die
-    Fahrtrichtung aus der Positionsaenderung geglaettet. thresholds identisch:
-    MAX_DIST 12 m, |Laengsversatz| <= 6 m, Querabstand 1.0..5.5 m. Nur in
-    Bewegung (Geschwindigkeit > 12 km/h, Wegstueck > 0.25 m) wird der
-    Richtungsvektor nachgefuehrt - steht das Auto, bleibt der letzte Stand.
-    flip (Seiten spiegeln) entspricht der Desktop-Einstellung.
+def canvas_size(screen_w: int, screen_h: int):
+    """Leinwandgroesse aus der Bildschirmgroesse.
+
+    1:1-Spiegel: ohne Deckel waere die Leinwand so gross wie der Bildschirm.
+    Sehr grosse Aufloesungen (4K und darueber) werden auf hoechstens
+    2560x1440 verkleinert - die Leinwand bleibt dadurch speicherbar und der
+    Layer schnell. Rueckgabe: (w, h, scale) mit scale <= 1.0.
     """
+    sw, sh = max(1, int(screen_w)), max(1, int(screen_h))
+    s = min(1.0, CAP_W / sw, CAP_H / sh)
+    w = max(64, min(MAX_CANVAS, int(round(sw * s))))
+    h = max(64, min(MAX_CANVAS, int(round(sh * s))))
+    return (w, h, s)
 
-    MAX_DIST = 12.0
-    FWD_MAX = 6.0
-    LAT_MIN = 1.0
-    LAT_MAX = 5.5
 
-    def __init__(self, flip: bool = True):
-        self.flip = bool(flip)
-        self.left = False
-        self.right = False
-        self._prev = None
-        self._hx = 0.0
-        self._hz = 0.0
+def pose_from_config(cfg: dict, w: int, h: int):
+    """Pose-Floats fuer den Header: (quadW, quadH, posX, posY, posZ).
 
-    @property
-    def state(self):
-        return (self.left, self.right)
+    quadH folgt aus dem Leinwand-Seitenverhaeltnis, damit der Spiegel nie
+    verzerrt wird. Der Abstand wird positiv gespeichert und im Header als
+    negatives z (vor dem Fahrer) geschrieben - der LOCAL-Raum zeigt -z nach
+    vorn."""
+    qw = float(cfg.get("vr_width_m", DEFAULTS["vr_width_m"]))
+    qw = min(20.0, max(0.1, qw))
+    qh = qw * float(h) / float(w)
+    hy = float(cfg.get("vr_height_m", DEFAULTS["vr_height_m"]))
+    dist = abs(float(cfg.get("vr_dist_m", DEFAULTS["vr_dist_m"])))
+    return (qw, qh, 0.0, min(10.0, max(-10.0, hy)), -min(10.0, max(0.1, dist)))
 
-    def update(self, s):
-        self.left = self.right = False
-        if s is None:
-            return self.state
-        px = float(getattr(s, "pos_x", 0.0) or 0.0)
-        pz = float(getattr(s, "pos_z", 0.0) or 0.0)
-        spd = float(getattr(s, "speed_kmh", 0.0) or 0.0)
-        if self._prev is not None:
-            dx = px - self._prev[0]
-            dz = pz - self._prev[1]
-            d = (dx * dx + dz * dz) ** 0.5
-            if d > 0.25 and spd > 12.0:
-                a = 0.35
-                self._hx = (1 - a) * self._hx + a * (dx / d)
-                self._hz = (1 - a) * self._hz + a * (dz / d)
-        self._prev = (px, pz)
-        hlen = (self._hx * self._hx + self._hz * self._hz) ** 0.5
-        if hlen < 1e-3:
-            return self.state
-        hx, hz = self._hx / hlen, self._hz / hlen
-        for opp in (getattr(s, "opponents", ()) or ()):
-            try:
-                ox, oz, in_pits = float(opp[1]), float(opp[2]), bool(opp[3])
-            except Exception:
-                continue
-            if in_pits:
-                continue
-            relx = ox - px
-            relz = oz - pz
-            dist = (relx * relx + relz * relz) ** 0.5
-            if dist < 0.5 or dist > self.MAX_DIST:
-                continue
-            fwd = relx * hx + relz * hz
-            cross = relx * hz - relz * hx
-            lat = abs(cross)
-            if abs(fwd) > self.FWD_MAX or lat < self.LAT_MIN or lat > self.LAT_MAX:
-                continue
-            left = cross > 0
-            if self.flip:
-                left = not left
-            if left:
-                self.left = True
-            else:
-                self.right = True
-        return self.state
+
+def hidden_classes(cfg: dict):
+    """Namen der Overlay-Klassen, die nicht in die VR gespiegelt werden."""
+    lst = cfg.get("vr_hidden", []) or []
+    return set(x for x in lst if isinstance(x, str))
 
 # ---------------------------------------------------------------------------
-# Renderer (512x256 BGRA, PySide-frei)
+# VRMirror: Shared Memory + Lebenszyklus
 # ---------------------------------------------------------------------------
 
-# BGRA-Farben
-_PANEL = (24, 24, 28, 140)         # halbtransparent dunkel
-_PANEL_LINE = (70, 70, 84, 110)
-_AMBER = (35, 166, 245, 255)        # #f5a623 in B,G,R
-_AMBER_DIM = (52, 88, 122, 150)     # inaktiv: gedaempfte Kontur
-_FRAME_A = (208, 208, 208, 170)     # Leinwand-Rahmen hell
-_FRAME_B = (60, 60, 60, 90)         # Leinwand-Rahmen dunkel (Schraffur)
+class VRMirror:
+    """Haelt das PBVR-v2-Shared-Memory offen. publish(bgra) schreibt ein
+    Leinwandbild (w*h*4 Bytes BGRA) und den Header mit neuem frame-Zaehler.
+    Der Layer aktualisiert die Textur nur bei neuem Zaehler - publish() wird
+    deshalb maximal 20x pro Sekunde aufgerufen (REFRESH_S, siehe too_soon)."""
 
-
-def _set(buf, w, h, x, y, c):
-    if 0 <= x < w and 0 <= y < h:
-        i = (y * w + x) * 4
-        buf[i] = c[0]
-        buf[i + 1] = c[1]
-        buf[i + 2] = c[2]
-        buf[i + 3] = c[3]
-
-
-def _fill_rect(buf, w, h, x0, y0, x1, y1, c):
-    for y in range(max(0, y0), min(h, y1)):
-        base = y * w * 4
-        row = bytes(c) * (x1 - x0)
-        i = base + max(0, x0) * 4
-        buf[i:i + len(row)] = row
-
-
-def _in_tri(px, py, ax, ay, bx, by, cx, cy):
-    d1 = (px - bx) * (ay - by) - (ax - bx) * (py - by)
-    d2 = (px - cx) * (by - cy) - (bx - cx) * (py - cy)
-    d3 = (px - ax) * (cy - ay) - (cx - ax) * (py - ay)
-    has_neg = (d1 < 0) or (d2 < 0) or (d3 < 0)
-    has_pos = (d1 > 0) or (d2 > 0) or (d3 > 0)
-    return not (has_neg and has_pos)
-
-
-def _draw_tri(buf, w, h, a, b, c, fill, outline):
-    """Gefuelltes Dreieck (Pfeilspitze) mit Kontur."""
-    a, b, c = [(int(v[0]), int(v[1])) for v in (a, b, c)]
-    xs = (a[0], b[0], c[0])
-    ys = (a[1], b[1], c[1])
-    for y in range(max(0, min(ys) - 1), min(h, max(ys) + 2)):
-        for x in range(max(0, min(xs) - 1), min(w, max(xs) + 2)):
-            if _in_tri(x + 0.5, y + 0.5, a[0], a[1], b[0], b[1], c[0], c[1]):
-                _set(buf, w, h, x, y, fill)
-    _draw_line(buf, w, h, a, b, outline)
-    _draw_line(buf, w, h, b, c, outline)
-    _draw_line(buf, w, h, c, a, outline)
-
-
-def _draw_line(buf, w, h, p0, p1, c):
-    """Bresenham-Linie."""
-    x0, y0 = p0
-    x1, y1 = p1
-    dx = abs(x1 - x0)
-    dy = -abs(y1 - y0)
-    sx = 1 if x0 < x1 else -1
-    sy = 1 if y0 < y1 else -1
-    err = dx + dy
-    x, y = x0, y0
-    while True:
-        _set(buf, w, h, x, y, c)
-        if x == x1 and y == y1:
-            break
-        e2 = 2 * err
-        if e2 >= dy:
-            err += dy
-            x += sx
-        if e2 <= dx:
-            err += dx
-            y += sy
-
-
-def render_board(left: bool, right: bool, show_frame: bool = True,
-                 w: int = BOARD_W, h: int = BOARD_H) -> bytes:
-    """Baut das Tafelbild (BGRA). Zwei Pfeile links/rechts wie im Desktop-
-    Overlay: bernsteinfarben gefuellt, wenn ein Auto im toten Winkel steht,
-    sonst nur gedaempfte Kontur. Der schraffierte Leinwand-Rahmen (Marcels
-    Wunsch: zeigt die VR-Leinwand, abschaltbar) umrandet die Tafel."""
-    buf = bytearray(w * h * 4)   # komplett transparent (A=0)
-
-    # Panel: abgerundete Box mit Rand
-    m = 12
-    _fill_rect(buf, w, h, m + 3, m + 3, w - m - 3, h - m - 3, _PANEL)
-    for x in range(m, w - m):
-        for e in range(3):
-            _set(buf, w, h, x, m + e, _PANEL_LINE)
-            _set(buf, w, h, x, h - 1 - m - e, _PANEL_LINE)
-    for y in range(m, h - m):
-        for e in range(3):
-            _set(buf, w, h, m + e, y, _PANEL_LINE)
-            _set(buf, w, h, w - 1 - m - e, y, _PANEL_LINE)
-
-    # Pfeile: Spitze zeigt nach AUSSEN (links links, rechts rechts),
-    # wie Blick in die Seitenspiegel. Aktiver Pfeil: gefuellt amber.
-    cy = h // 2
-    ax_w = int(h * 0.22)          # Pfeilbreite (Halbe)
-    ax_h = int(h * 0.30)          # Pfeilhoehe (Halbe)
-    lx = int(w * 0.30)            # Mitte linker Pfeil
-    rx = int(w * 0.70)            # Mitte rechter Pfeil
-    lc = _AMBER if left else _AMBER_DIM
-    rc = _AMBER if right else _AMBER_DIM
-    # linker Pfeil: Spitze links
-    _draw_tri(buf, w, h, (lx - ax_w, cy), (lx + ax_w * 0.7, cy - ax_h), (lx + ax_w * 0.7, cy + ax_h), lc, lc)
-    # rechter Pfeil: Spitze rechts
-    _draw_tri(buf, w, h, (rx + ax_w, cy), (rx - ax_w * 0.7, cy - ax_h), (rx - ax_w * 0.7, cy + ax_h), rc, rc)
-
-    # Leinwand-Rahmen: 4 px schraffierter Rand (abschaltbar)
-    if show_frame:
-        band = 4
-        for y in range(h):
-            for x in range(w):
-                edge = x < band or x >= w - band or y < band or y >= h - band
-                if edge:
-                    c = _FRAME_A if ((x + y) % 8) < 4 else _FRAME_B
-                    _set(buf, w, h, x, y, c)
-    return bytes(buf)
-
-# ---------------------------------------------------------------------------
-# VRBoard: Shared Memory + Lebenszyklus
-# ---------------------------------------------------------------------------
-
-class VRBoard:
-    """Haelt das PBVR-Shared-Memory offen und aktualisiert die Tafel.
-    tick() wird aus der Overlay-Aktualisierung von main.py (10-20 Hz) im
-    Qt-Hauptthread aufgerufen - kein eigener Thread noetig. start() legt das
-    Mapping an und liefert False, wenn das nicht moeglich ist (z. B. ohne
-    Windows); PitBoss laeuft dann ohne VR-Tafel weiter."""
-
-    def __init__(self, show_frame: bool = True, flip: bool = True):
-        self.show_frame = bool(show_frame)
-        self.tracker = BlindSpotTracker(flip=flip)
+    def __init__(self, w: int, h: int, cfg: dict = None):
+        cfg = cfg or {}
+        self.w = int(w)
+        self.h = int(h)
+        self.show_frame = bool(cfg.get("show_frame", True))
+        self.opacity = min(1.0, max(0.05, float(cfg.get("vr_opacity", 100)) / 100.0))
+        self.update_pose(cfg)
         self._k32 = None
         self._hmap = None
         self._view = None
         self._frame = 0
-        self._last = None
+        self._last = 0.0
+
+    def update_pose(self, cfg: dict):
+        """Regler-Aenderungen uebernehmen (wirkt ab dem naechsten Bild)."""
+        (self.quadW, self.quadH,
+         self.posX, self.posY, self.posZ) = pose_from_config(cfg or {}, self.w, self.h)
+        self.opacity = min(1.0, max(0.05, float((cfg or {}).get("vr_opacity", 100)) / 100.0))
 
     # -- Lebenszyklus -------------------------------------------------------
 
@@ -290,7 +169,7 @@ class VRBoard:
             return False
         try:
             k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-            size = HEADER_SIZE + BOARD_W * BOARD_H * 4
+            size = HEADER_SIZE + self.w * self.h * 4
             invalid = ctypes.c_void_p(-1).value  # INVALID_HANDLE_VALUE
             k32.CreateFileMappingW.restype = ctypes.c_void_p
             k32.CreateFileMappingW.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
@@ -313,7 +192,6 @@ class VRBoard:
             self._view = v
             self._frame = 0
             self._write_header()
-            self.redraw(force=True)
             return True
         except Exception:
             return False
@@ -338,31 +216,28 @@ class VRBoard:
     def _write_header(self):
         if self._view:
             hdr = struct.pack(HEADER_FMT, MAGIC, PROTOCOL_VERSION,
-                              BOARD_W, BOARD_H, self._frame)
+                              self.w, self.h, self._frame,
+                              self.quadW, self.quadH,
+                              self.posX, self.posY, self.posZ)
             ctypes.memmove(self._view, hdr, HEADER_SIZE)
 
-    def redraw(self, force: bool = False):
-        """Neu rendern, wenn sich der Zustand (oder der Rahmen-Modus) geaendert hat."""
-        state = self.tracker.state
-        if not force and state == self._last:
-            return
-        self._last = state
-        pixels = render_board(state[0], state[1], self.show_frame)
-        if self._view:
-            ctypes.memmove(self._view + HEADER_SIZE, pixels, len(pixels))
+    def too_soon(self, now: float) -> bool:
+        """True, wenn der letzte Spiegel noch keine REFRESH_S Sekunden alt ist."""
+        return (now - self._last) < REFRESH_S
 
-    def tick(self, main):
-        """Aufruf aus der Overlay-Aktualisierung: Toter-Winkel-Zustand
-        nachfuehren, Bild bei Aenderung neu schreiben, frame-zaehler
-        inkrementieren (Lebenszeichen im Header)."""
-        s = getattr(main, "last_live_sample", None)
-        if s is None:
-            samples = getattr(main, "samples", None)
-            s = samples[-1] if samples else None
-        self.tracker.update(s)
-        self.redraw()
+    def publish(self, bgra: bytes, now: float = None) -> bool:
+        """Leinwandbild ins Shared Memory schreiben (frame-Zaehler erhoehen).
+        Rueckgabe False, wenn das Mapping fehlt oder die Groesse nicht passt."""
+        if not self._view:
+            return False
+        if len(bgra) != self.w * self.h * 4:
+            return False
         self._frame = (self._frame + 1) & 0xFFFFFFFF
         self._write_header()
+        ctypes.memmove(self._view + HEADER_SIZE, bgra, len(bgra))
+        if now is not None:
+            self._last = now
+        return True
 
 # ---------------------------------------------------------------------------
 # Selftest (python vr_overlay.py)
@@ -377,35 +252,33 @@ if __name__ == "__main__":
         print(("PASS" if passed else "FAIL"), "-", name, info if not passed else "")
         ok = ok and passed
 
-    check("Header-Layout: 5 x uint32 = 20 Bytes", HEADER_SIZE == 20, HEADER_SIZE)
-    check("Board-Masse 512x256", (BOARD_W, BOARD_H) == (512, 256))
-    check("Magic", MAGIC == 0x52564250)
+    check("Header-Layout: 5 x uint32 + 5 x float = 40 Bytes", HEADER_SIZE == 40, HEADER_SIZE)
+    check("Protokoll v2", PROTOCOL_VERSION == 2)
 
-    img = render_board(True, False, True)
-    check("Bildgroesse", len(img) == BOARD_W * BOARD_H * 4, len(img))
-    li = ((BOARD_H // 2) * BOARD_W + int(BOARD_W * 0.30)) * 4  # linker Pfeil aktiv
-    check("Linker Pfeil amber", img[li + 3] == 255, img[li:li + 4])
-    ri = ((BOARD_H // 2) * BOARD_W + int(BOARD_W * 0.70)) * 4  # rechter Pfeil inaktiv
-    check("Rechter Pfeil gedimmt", img[ri + 3] == 150, img[ri:ri + 4])
-    fi = (2 * BOARD_W + 2) * 4  # Rahmenecke
-    check("Leinwand-Rahmen sichtbar", img[fi + 3] > 0, img[fi:fi + 4])
-    img2 = render_board(True, False, False)
-    check("Rahmen abschaltbar (Ecke transparent)", img2[fi + 3] == 0, img2[fi:fi + 4])
+    hdr = struct.pack(HEADER_FMT, MAGIC, PROTOCOL_VERSION, 1920, 1080, 7,
+                      1.5, 0.84, 0.0, 0.3, -1.2)
+    check("Header packen (1920x1080 + Pose)", len(hdr) == 40)
+    vals = struct.unpack(HEADER_FMT, hdr)
+    floats_ok = all(abs(a - b) < 1e-6 for a, b in zip(vals[5:], [1.5, 0.84, 0.0, 0.3, -1.2]))
+    check("Header entpacken", list(vals[:5]) == [MAGIC, 2, 1920, 1080, 7] and floats_ok, vals)
 
-    tr = BlindSpotTracker(flip=True)
-    check("Tracker Startzustand", tr.state == (False, False))
+    w, h, s = canvas_size(1920, 1080)
+    check("1:1-Aufloesung bleibt unskaliert", (w, h, s) == (1920, 1080, 1.0), (w, h, s))
+    w4, h4, s4 = canvas_size(3840, 2160)
+    check("4K wird gedeckelt (2560x1440)", (w4, h4) == (2560, 1440), (w4, h4, s4))
+    check("Deckel-Skalierung < 1", s4 < 1.0, s4)
 
-    class S:
-        pos_x = 0.0
-        pos_z = 0.0
-        speed_kmh = 0.0
-        opponents = ()
-        def __init__(self, x, z, v, opps):
-            self.pos_x, self.pos_z, self.speed_kmh, self.opponents = x, z, v, opps
+    cfg = dict(DEFAULTS)
+    qw, qh, px, py, pz = pose_from_config(cfg, 1920, 1080)
+    check("Pose: quadH folgt Seitenverhaeltnis", abs(qh - 1.6 * 1080 / 1920) < 1e-9, qh)
+    check("Pose: Abstand negativ (vor dem Fahrer)", pz < 0, pz)
+    qw2, qh2, _, _, _ = pose_from_config(dict(DEFAULTS, vr_width_m=3.0), 1000, 500)
+    check("Pose: Hoehe passt sich bei anderem Format an", abs(qh2 - 1.5) < 1e-9, qh2)
 
-    tr.update(S(0.0, 0.0, 0.0, ()))
-    tr.update(S(10.0, 0.0, 100.0, ((1, 10.0, 3.0, False),)))  # Bewegung +x, Gegner quer
-    check("Tracker: Gegner erkannt", tr.state[0] or tr.state[1], tr.state)
+    m = VRMirror(64, 64, DEFAULTS)
+    check("VRMirror: publish ohne start() = False", m.publish(b"x" * (64 * 64 * 4)) is False)
+    m._last = 100.0  # Basiszeit fuer den Drossel-Test
+    check("VRMirror: zu frueh erkannt", m.too_soon(100.01) is True and m.too_soon(100.1) is False)
 
     print("SELTEST", "OK" if ok else "FEHLER")
     sys.exit(0 if ok else 1)
