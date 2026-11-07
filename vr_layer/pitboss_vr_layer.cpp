@@ -409,7 +409,10 @@ static void InitOverlayImpl(XrSession session, OverlayState* st) {
 
     st->quad.type = XR_TYPE_COMPOSITION_LAYER_QUAD;
     st->quad.next = nullptr;
-    st->quad.layerFlags = 0;
+    // 0.4.0.2: Alpha-Blending erzwingen - ohne dieses Flag ignoriert die
+    // Laufzeit den Alpha-Kanal der Leinwand und rendert den transparenten
+    // Hintergrund opak schwarz (Marcels Praxistest 07.11.2026).
+    st->quad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_ALPHA_BIT;
     st->quad.space = st->space;
     st->quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
     st->quad.subImage.swapchain = st->swapchain;

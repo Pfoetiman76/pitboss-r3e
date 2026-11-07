@@ -49,9 +49,10 @@ def canvas_size_1zu1():
 
 @case
 def canvas_size_deckel():
-    """4K wird auf 2560x1440 gedeckelt (Speicherschutz)."""
-    w, h, s = vo.canvas_size(3840, 2160)
-    assert (w, h) == (2560, 1440), (w, h)
+    """4K bleibt 1:1 scharf (0.4.0.2); erst ab 4096 wird gedeckelt."""
+    assert vo.canvas_size(3840, 2160) == (3840, 2160, 1.0)
+    w, h, s = vo.canvas_size(5120, 2880)
+    assert (w, h) == (4096, 2304), (w, h)
     assert 0.0 < s < 1.0
 
 
