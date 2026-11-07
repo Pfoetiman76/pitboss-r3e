@@ -18,15 +18,22 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # Hinweis: pwsh-Runner nutzen ErrorActionPreference=Stop und behandeln
+      # Stderr nativer Befehle als Fehler. Beide Schritte schalten das explizit
+      # ab und werten stattdessen den Exit-Code aus.
       - name: CMake konfigurieren (x64)
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
           cmake -S vr_layer -B vr_layer/build -A x64 2>&1 | Tee-Object -FilePath ci.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: DLL bauen (Release)
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
           cmake --build vr_layer/build --config Release 2>&1 | Tee-Object -FilePath build.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
