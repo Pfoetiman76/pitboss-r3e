@@ -43,20 +43,37 @@ cmake --build vr_layer/build --config Release
 
 Ergebnis: `XR_APILAYER_PitBossR3E_VR.dll` + `pitboss_vr_layer.json`.
 (Die GitHub-Actions CI baut beides automatisch, siehe
-`.github/workflows/vr-layer-ci.yml`.)
+`.github/workflows/vr-layer-ci.yml`; das Release-Workflow stellt beides
+als oeffentliches Pre-Release "poc-vr-layer" bereit.)
 
-## Aktivieren (expliziter Layer, ohne Registry-Eingriff)
+## Aktivieren (impliziter Layer, Registry)
 
-Eingabeaufforderung, dann RaceRoom aus **demselben** Fenster starten:
+Explizite Layer werden nur geladen, wenn die Anwendung sie selbst per
+`enabledApiLayers` anfordert - RaceRoom tut das nicht, Umgebungsvariablen
+aktivieren deshalb KEINE Layer. Der Layer wird daher als impliziter Layer
+registriert (gleiches Verfahren wie OpenKneeboard / OpenXR-Toolkit). Ein
+Zielprozess-Filter im Layer sorgt dafuer, dass er nur im RaceRoom-Prozess
+(RRRE.exe) aktiv wird und sich in allen anderen OpenXR-Anwendungen
+vollstaendig passiv verhaelt.
+
+Eingabeaufforderung, eine Zeile (Pfad bei anderem Ordner anpassen):
 
 ```
-set XR_APILAYER_PATH=C:\Pfad\zum\Layer   (Ordner mit der JSON)
-set XR_API_LAYER_PATH=X:XR_APILAYER_PitBossR3E_VR
-RaceRoom.exe
+reg add "HKCU\SOFTWARE\Khronos\OpenXR\1\ApiLayers\Implicit" /v "C:\PitBossVR\pitboss_vr_layer.json" /t REG_DWORD /d 0 /f
 ```
 
-Deaktivieren: Umgebungsvariablen nicht setzen. Nichts wird dauerhaft im
-System registriert.
+Danach RaceRoom neu starten (VR-Variante). Die Tafel ist bereits im
+VR-Hauptmenue sichtbar. Steam und Virtual Desktop muessen nicht neu
+gestartet werden.
+
+Deaktivieren (eine Zeile):
+
+```
+reg delete "HKCU\SOFTWARE\Khronos\OpenXR\1\ApiLayers\Implicit" /v "C:\PitBossVR\pitboss_vr_layer.json" /f
+```
+
+Alternativ laesst sich der Layer ueber den Wert abschalten, ohne die
+Registrierung zu entfernen: `/d 1` statt `/d 0` im reg-add-Befehl.
 
 ## PoC-Einschraenkungen (bewusst, Ausbau in Folgeversionen)
 
