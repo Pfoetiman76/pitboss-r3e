@@ -33,7 +33,7 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.2.0 Beta"
+APP_VERSION = "0.4.2.1 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -7792,11 +7792,37 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 self.log.append("VR-Overlay: Shared Memory konnte nicht angelegt werden - VR-Spiegel nicht verfuegbar.")
                 return
             self.vr_board = b
+            # 0.4.2.1: EIGENER Takt fuer den Spiegel. Bis 0.4.2.0 hing der
+            # Spiegel-Tick an der Telemetrie-Kette (live_tick -> refresh_
+            # overlay) - war RaceRoom nicht lesbar (Hauptmenue/keine
+            # Session) oder stand das Auto, wurde NIE in das Shared Memory
+            # geschrieben und die DLL zeigte nur ihr Testmuster. Der
+            # Spiegel laeuft jetzt unabhaengig davon in jedem Zustand.
+            try:
+                t = getattr(self, "_vr_mirror_timer", None)
+                if t is not None:
+                    try:
+                        t.stop(); t.deleteLater()
+                    except Exception:
+                        pass
+                self._vr_mirror_timer = QTimer(self)
+                self._vr_mirror_timer.setInterval(50)
+                self._vr_mirror_timer.timeout.connect(self._vr_mirror_tick)
+                self._vr_mirror_timer.start()
+            except Exception as e:
+                self.log.append(f"VR-WARNUNG: Spiegel-Takt konnte nicht gestartet werden ({type(e).__name__}: {e}).")
             self._vr_save_config(enabled=True)
             self.log.append(f"VR-Overlay aktiv: Jedes Overlay ist jetzt eine eigene Tafel in der VR (eigene Position, eigener Abstand, eigene Kippung). Aenderungen wirken sofort (max. 10 Bilder/s).")
         else:
             self.vr_board.stop()
             self.vr_board = None
+            try:  # 0.4.2.1: Spiegel-Takt stoppen
+                t = getattr(self, "_vr_mirror_timer", None)
+                if t is not None:
+                    t.stop(); t.deleteLater()
+                    self._vr_mirror_timer = None
+            except Exception:
+                pass
             self._vr_save_config(enabled=False)
             self.log.append("VR-Overlay gestoppt - im Spiel ist wieder das Testmuster der DLL zu sehen.")
         self._sync_overlay_menu_checks()
