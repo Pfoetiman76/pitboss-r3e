@@ -29,10 +29,11 @@ from tts import SpeechEngine  # 0.4.7.2: Offline-Sprachausgabe
 import updater  # 0.4.7.5: Update-Pruefung ueber GitHub Releases
 import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
+import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
 
-APP_VERSION = "0.3.2.2 Beta"
+APP_VERSION = "0.4.0.0 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -59,6 +60,7 @@ DAMAGE_MODEL_PATH = EXPORT_DIR / "damage_model.json"  # 0.4.9.4
 COACH_TIMING_PATH = EXPORT_DIR / "coach_timing.json"  # 0.4.9.8: Ansage-Vorlauf
 OVERLAY_SIZES_PATH = EXPORT_DIR / "overlay_sizes.json"  # 0.4.9.8: Overlay-Groessen
 BLINDSPOT_CONFIG_PATH = EXPORT_DIR / "blindspot.json"  # 0.5.9.13: Toter-Winkel (Flip)
+VR_CONFIG_PATH = EXPORT_DIR / "vr_overlay.json"  # 0.4.0.0: VR-Overlay (aktiv + Leinwand-Rahmen)
 HOTKEY_CONFIG_PATH = EXPORT_DIR / "hotkeys.json"  # 0.2.5: frei belegbare Hotkeys (Stream Deck)
 UI_LAYOUT_PATH = EXPORT_DIR / "ui_layout.json"  # 0.2.10: Einfache Ansicht vs. Experte
 ANALYSIS_CONFIG_PATH = EXPORT_DIR / "analysis_config.json"  # 0.2.31: Auswertungs-Optionen
@@ -5397,6 +5399,7 @@ class Main(QMainWindow):
         self.pedal_overlay_window = None  # 0.4.7.1
         self.limit_overlay_window = None  # 0.4.8.7
         self.blindspot_overlay_window = None   # 0.5.9.13: Toter-Winkel-Overlay
+        self.vr_board = None   # 0.4.0.0: VR-Tafel (kein Fenster - PBVR Shared Memory)
         self.lift_coast_lap = None
         self.lift_coast_time_s = 0.0
         self.lift_coast_estimated_saved_l = 0.0
@@ -5580,6 +5583,16 @@ class Main(QMainWindow):
         self.act_blindspot_flip.setCheckable(True)
         self.act_blindspot_flip.setChecked(BlindSpotOverlayWindow._load_flip())
         self.act_blindspot_flip.toggled.connect(self.set_blindspot_flip)
+        # 0.4.0.0: VR-Tafel. Der OpenXR-API-Layer im Spiel (Pre-Release
+        # poc-vr-layer) liest das Bild aus dem PBVR-Shared-Memory und reicht
+        # es als Quad in die VR ein. Die Tafel spiegelt den Toter-Winkel-
+        # Zustand live (Hauptmenue und Cockpit), funktioniert aber auch ohne
+        # geoeffnetes Desktop-Overlay.
+        self.act_vr_overlay = _ov.addAction("VR-Overlay (Toter Winkel)", self.toggle_vr_overlay)
+        self.act_vr_overlay.setCheckable(True)
+        self.act_vr_frame = _ov.addAction("VR: Leinwand-Rahmen zeigen", self.set_vr_frame_visible)
+        self.act_vr_frame.setCheckable(True)
+        self.act_vr_frame.setChecked(bool(vr_overlay.load_config(VR_CONFIG_PATH).get("show_frame", True)))
         _ov_toggle("Bremstemperaturen (inkl. Verschleiß-Schätzung)", self.toggle_brake_overlay, "brake_overlay_window")
         _ov_toggle("Kraftstoff", self.toggle_fuel_overlay, "fuel_overlay_window")
         _ov_toggle("Kurven-Namen", self.toggle_corner_name_overlay, "corner_name_overlay_window")  # 0.2.41: ins Overlays-Menue verschoben (war unter Mehr)
@@ -6149,6 +6162,12 @@ class Main(QMainWindow):
                     fn()
                 except Exception:
                     pass
+        except Exception:
+            pass
+        # 0.4.0.0: VR-Tafel gemaess gespeicherter Konfiguration aktivieren
+        try:
+            if vr_overlay.load_config(VR_CONFIG_PATH).get("enabled"):
+                self.toggle_vr_overlay()
         except Exception:
             pass
         self._sync_overlay_menu_checks()  # 0.3.2.0: Haken der wiederhergestellten Overlays setzen
@@ -7621,6 +7640,9 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         win = getattr(self, "blindspot_overlay_window", None)
         if win is not None:
             win.set_flip(on)
+        vrb = getattr(self, "vr_board", None)  # 0.4.0.0: VR-Tafel spiegelt die Einstellung
+        if vrb is not None and getattr(vrb, "tracker", None) is not None:
+            vrb.tracker.flip = on
         else:
             try:
                 EXPORT_DIR.mkdir(parents=True, exist_ok=True)
@@ -7629,6 +7651,59 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 pass
         try:
             self.status.setText("Toter Winkel: Seiten " + ("gespiegelt." if on else "normal."))
+        except Exception:
+            pass
+
+    def _vr_save_config(self, enabled=None, show_frame=None):
+        """0.4.0.0: VR-Overlay-Konfiguration (aktiv/Leinwand-Rahmen) merken."""
+        try:
+            updates = {}
+            if enabled is not None:
+                updates["enabled"] = bool(enabled)
+            if show_frame is not None:
+                updates["show_frame"] = bool(show_frame)
+            vr_overlay.save_config(VR_CONFIG_PATH, updates)
+        except Exception:
+            pass
+
+    def _vr_show_frame(self):
+        try:
+            return bool(vr_overlay.load_config(VR_CONFIG_PATH).get("show_frame", True))
+        except Exception:
+            return True
+
+    def toggle_vr_overlay(self):  # 0.4.0.0
+        """VR-Tafel an/aus: legt das PBVR-Shared-Memory an bzw. gibt es frei.
+        Die DLL im Spiel zeigt ohne PitBoss ihr Testmuster (wandernder Balken),
+        mit PitBoss den Toter-Winkel-Zustand. Kein Fenster - der Haken im
+        Menue spiegelt nur den Zustand des Boards."""
+        if self.vr_board is None:
+            b = vr_overlay.VRBoard(show_frame=self._vr_show_frame(),
+                                   flip=BlindSpotOverlayWindow._load_flip())
+            if not b.start():
+                self.log.append("VR-Overlay: Shared Memory konnte nicht angelegt werden - VR-Tafel nicht verfuegbar.")
+                return
+            self.vr_board = b
+            self._vr_save_config(enabled=True)
+            self.log.append("VR-Overlay aktiv: Toter-Winkel-Tafel wird an die VR gesendet (VR-Layer im Spiel noetig, Registry-Wert 0).")
+        else:
+            self.vr_board.stop()
+            self.vr_board = None
+            self._vr_save_config(enabled=False)
+            self.log.append("VR-Overlay gestoppt - im Spiel ist wieder das Testmuster der DLL zu sehen.")
+        self._sync_overlay_menu_checks()
+
+    def set_vr_frame_visible(self, on):  # 0.4.0.0
+        """Leinwand-Rahmen der VR-Tafel ein/aus (Marcels Wunsch: zeigt, was in
+        der VR sichtbar ist; abschaltbar, damit die Tafel unauffaellig bleibt)."""
+        on = bool(on)
+        self._vr_save_config(show_frame=on)
+        b = getattr(self, "vr_board", None)
+        if b is not None:
+            b.show_frame = on
+            b.redraw(force=True)
+        try:
+            self.status.setText("VR: Leinwand-Rahmen " + ("sichtbar." if on else "ausgeblendet."))
         except Exception:
             pass
 
@@ -7657,6 +7732,10 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 act.setChecked(w is not None and w.isVisible())
             except Exception:
                 pass
+        # 0.4.0.0: VR-Tafel ist kein Fenster - eigener Haken
+        _vr_act = getattr(self, "act_vr_overlay", None)
+        if _vr_act is not None:
+            _vr_act.setChecked(getattr(self, "vr_board", None) is not None)
         # Flaggen-Overlay: Haken = scharf geschaltet (erscheint automatisch).
         act = getattr(self, "act_flag_overlay", None)
         if act is not None:
@@ -7780,6 +7859,10 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             _w = getattr(self, _a, None)
             if _w is not None and _w.isVisible():
                 _w.update_from_main(self)
+        # 0.4.0.0: VR-Tafel - Toter-Winkel-Zustand an die VR spiegeln
+        _vrb = getattr(self, "vr_board", None)
+        if _vrb is not None:
+            _vrb.tick(self)
 
     def set_dash_card(self, key: str, value: str):
         if hasattr(self, "dash_cards") and key in self.dash_cards:
@@ -11457,6 +11540,14 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 w.deleteLater()
             except Exception:
                 pass
+        # 0.4.0.0: VR-Shared-Memory freigeben (ohne PitBoss zeigt der Layer
+        # im Spiel wieder sein Testmuster mit wanderndem Balken).
+        try:
+            if self.vr_board is not None:
+                self.vr_board.stop()
+                self.vr_board = None
+        except Exception:
+            pass
         # Sicherheitsnetz: auch Overlays auswaendiger Referenzen (Duplikate) schliessen
         try:
             for w in QApplication.topLevelWidgets():
