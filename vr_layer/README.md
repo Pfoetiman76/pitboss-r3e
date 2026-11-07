@@ -15,20 +15,34 @@ PitBoss (Python)                       RaceRoom-Prozess
 +---------------------+                +------------------------------+
 ```
 
-Shared-Memory-Protokoll (Version 1), Name `Local\PitBossR3E_VR`:
+Shared-Memory-Protokoll, Name `Local\PitBossR3E_VR`:
 
-| Offset | Typ      | Bedeutung                              |
-|--------|----------|----------------------------------------|
-| 0      | uint32   | Magic `0x52564250` ("PBVR")            |
-| 4      | uint32   | Protokollversion (1)                   |
-| 8      | uint32   | Breite (512)                           |
-| 12     | uint32   | Hoehe (256)                            |
-| 16     | uint32   | Bildzaehler (pro Frame +1)             |
-| 20     | BGRA[512x256] | Pixel, Zeilen von oben          |
+**Version 3 (0.4.2.0):** Header (20 Bytes), danach Slot-Tabelle (16 x 48
+Bytes), danach die Pixel je belegtem Slot. Die DLL reicht EIN QUAD JE
+BELEGGTEM SLOT ein - jedes Overlay hat damit eine eigene Position, einen
+eigenen Abstand (Tiefe) und eine eigene Kippung (pitch/yaw, wie
+OpenKneeboard).
 
-Laeuft PitBoss nicht, zeigt der Layer ein Testmuster mit wanderndem Balken
-("Testtafel"). Damit ist der PoC ohne PitBoss in jeder Practice-Session
-pruefbar.
+| Offset | Typ      | Bedeutung                                  |
+|--------|----------|--------------------------------------------|
+| 0      | uint32   | Magic `0x52564250` ("PBVR")                |
+| 4      | uint32   | Protokollversion (3)                       |
+| 8      | uint32   | Bildzaehler (pro Spiegelbild +1)           |
+| 12     | uint32   | count: Anzahl belegter Slots               |
+| 16     | uint32   | maxSlots (16)                              |
+| 20     | 16x48 B  | Slot-Tabelle                               |
+| 788    | BGRA     | Pixel der Slots (premultipliziert)         |
+
+Slot-Eintrag (48 Bytes, Format "<5I7f"): used, w, h, offset (ab Byte 788),
+pad, quadW, quadH, posX, posY, posZ, pitch (Radiant), yaw (Radiant).
+Pose und Kippung werden JE Frame aus der Tabelle uebernommen; die Texturen
+aktualisiert die DLL nur bei neuem Bildzaehler (Performance, 0.4.1.1).
+
+Die aelteren Protokolle v1 (feste Einzeltafel 512x256) und v2 (eine
+Gesamt-Leinwand mit Pose) bleiben lesbar; die DLL zeigt sie nur, wenn kein
+gueltiger v3-Header anliegt. Laeuft PitBoss nicht, zeigt der Layer ein
+Testmuster mit wanderndem Balken ("Testtafel") - damit ist der Layer ohne
+PitBoss in jeder Practice-Session pruefbar.
 
 ## Bauen
 

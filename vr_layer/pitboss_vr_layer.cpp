@@ -1,18 +1,24 @@
 // ---------------------------------------------------------------------------
-// PitBoss R3E - OpenXR API Layer "VR Overlay" (Proof of Concept, 0.4.0.0)
+// PitBoss R3E - OpenXR API Layer "VR Overlay" (PBVR v3, 0.4.2.0)
 // ---------------------------------------------------------------------------
-// Blaendet eine virtuelle Tafel (Quad-Layer) in die OpenXR-Szene des Spiels
-// ein. Funktioniert mit jeder OpenXR-Runtime, also ausdruecklich auch mit
+// Blaendet virtuelle Tafeln (Quad-Layer) in die OpenXR-Szene des Spiels ein.
+// Funktioniert mit jeder OpenXR-Runtime, also ausdruecklich auch mit
 // Virtual Desktop / VDXR (kein SteamVR noetig) - der Layer laeuft im
 // Spielprozess.
 //
 // Architektur:
-//   PitBoss (Python) rendert die Overlay-Inhalte als BGRA-Bild in den
-//   Shared-Memory-Puffer "Local\\PitBossR3E_VR" (Header: magic, version,
-//   width, height, frame). Der Layer liest diesen Puffer und legt ihn als
-//   Quad-Layer ueber die Szene. Fehlt der Puffer (PitBoss laeuft nicht),
-//   zeigt der Layer ein ruhiges Testmuster - so ist der PoC ohne PitBoss
-//   pruefbar ("Testtafel").
+//   PitBoss (Python) rendert JE Overlay als eigenes BGRA-Bild in den
+//   Shared-Memory-Puffer "Local\\PitBossR3E_VR" (PBVR v3: Header mit
+//   frame/count/maxSlots, 16er-Slot-Tabelle mit Groesse/Offset/Pose
+//   inkl. Distanz und Kippung, danach die Pixel je Slot). Der Layer legt
+//   fuer jeden Slot eine eigene Swapchain an und reicht EIN QUAD JE
+//   OVERLAY ein - mit eigener Position, eigenem Abstand (Tiefe) und
+//   eigener Kippung (pitch/yaw, wie OpenKneeboard).
+//
+//   Aeltere Protokolle bleiben lesbar: v2 (eine Gesamt-Leinwand mit Pose)
+//   und v1 (alte Einzeltafel) laufen ueber den bisherigen Ein-Quad-Pfad.
+//   Fehlt der Puffer (PitBoss laeuft nicht), zeigt der Layer ein ruhiges
+//   Testmuster - so ist der Layer ohne PitBoss pruefbar ("Testtafel").
 //
 // Aktivierung: impliziter Layer (Registry, siehe vr_layer/README.md).
 //   Explizite Layer werden nur geladen, wenn die Anwendung sie selbst
@@ -22,18 +28,7 @@
 //   OpenXR-Anwendungen vollstaendig passiv.
 //
 // Diagnose: jede Log-Meldung wird nach %TEMP%\\PitBossVR_layer.log
-//   geschrieben (PoC-Hilfsmittel; wird mit der Integration entfernt).
-//
-// Verhandlung: Der aktuelle OpenXR-Loader verlangt zunaechst
-//   xrNegotiateLoaderApiLayerInterface, uebergibt danach die klassische
-//   xrCreateApiLayerInstance-Kette mit nextInfo. Das Manifest MUSS fuer
-//   implizite Layer "disable_environment" enthalten, sonst verwirft der
-//   Loader das Manifest stillschweigend (7.11.2026 gelernt).
-//
-// PoC-Einschraenkungen (dokumentiert, Ausbau in Folgeversionen):
-//   - Eine Instanz; pro Session ein Zustand (erste Session aktiv).
-//   - Textur-Updates ueber den Immediate Context des Spiels (D3D11).
-//   - Feste Pose im LOCAL-Raum (oben, etwas vor dem Startpunkt).
+//   geschrieben.
 //
 // Build: siehe vr_layer/CMakeLists.txt (Windows, D3D11, statische CRT,
 // vendored Header, kein Netzwerk-Zugriff noetig).
@@ -49,6 +44,7 @@
 #include <openxr/openxr_platform.h>
 #include <openxr/openxr_loader_negotiation.h>
 
+#include <cmath>
 #include <cstdarg>
 #include <cctype>
 #include <cstdio>
@@ -99,24 +95,53 @@ static void Log(const char* fmt, ...) {
 // Shared-Memory-Protokoll (identisch zur Python-Seite, siehe vr_layer/README)
 // ---------------------------------------------------------------------------
 
-struct SharedHeader {
-    uint32_t magic;     // 'P','B','V','R' little-endian
-    uint32_t version;   // 2 = Monitor-Spiegel (Leinwand + Pose); 1 = alte Einzeltafel
-    uint32_t width;     // Leinwandbreite (z. B. 1920)
-    uint32_t height;    // Leinwandhoehe (z. B. 1080)
-    uint32_t frame;     // laufende Nummer, PitBoss inkrementiert pro Bild
-    float    quadW;     // Tafelbreite in Metern (nur v2)
-    float    quadH;     // Tafelhoehe in Metern (nur v2)
-    float    posX;      // Position im LOCAL-Raum (nur v2)
+struct SharedHeader {          // v1/v2 (Legazy-Pfad)
+    uint32_t magic;
+    uint32_t version;          // 1, 2
+    uint32_t width;
+    uint32_t height;
+    uint32_t frame;
+    float    quadW;            // nur v2
+    float    quadH;
+    float    posX;
     float    posY;
     float    posZ;
 };
-static const uint32_t kMagic     = 0x52564250;  // "PBVR" little-endian
-static const uint32_t kVersionV1 = 1;
-static const uint32_t kVersionV2 = 2;
-static const uint32_t kTexWidth  = 512;   // Standard-Leinwand (v1 / Testmuster)
-static const uint32_t kTexHeight = 256;
-static const uint32_t kMaxCanvas = 4096;  // Obergrenze gegen defekte Header
+
+struct SharedHeader3 {         // v3: Header (20 Bytes)
+    uint32_t magic;
+    uint32_t version;           // 3
+    uint32_t frame;
+    uint32_t count;
+    uint32_t maxSlots;
+};
+
+struct SlotHeader {            // v3: Slot-Tabellen-Eintrag (48 Bytes)
+    uint32_t used;
+    uint32_t w;
+    uint32_t h;
+    uint32_t offset;
+    uint32_t pad;
+    float    quadW;
+    float    quadH;
+    float    posX;
+    float    posY;
+    float    posZ;
+    float    pitch;             // Kippung vertikal (Radiant)
+    float    yaw;               // Kippung horizontal (Radiant)
+};
+
+static const uint32_t kMagic       = 0x52564250;  // "PBVR" little-endian
+static const uint32_t kVersionV1  = 1;
+static const uint32_t kVersionV2  = 2;
+static const uint32_t kVersionV3  = 3;
+static const uint32_t kTexWidth    = 512;   // Standard-Leinwand (v1/Testmuster)
+static const uint32_t kTexHeight   = 256;
+static const uint32_t kMaxCanvas   = 4096;  // Obergrenze gegen defekte Header
+static const uint32_t kMaxSlots    = 16;    // MUSS zur Python-Seite passen
+static const uint32_t kSlotSize    = 48;    // sizeof(SlotHeader)
+static const uint32_t kDataStart   = 20 + kMaxSlots * kSlotSize;  // 788
+static const uint64_t kShmBytes    = 64ull * 1024 * 1024;          // wie Python
 
 // ---------------------------------------------------------------------------
 // Globaler Layer-Zustand
@@ -130,17 +155,16 @@ static PFN_xrEndFrame             g_nextEndFrame = nullptr;
 static PFN_xrEnumerateSwapchainFormats g_xrEnumerateSwapchainFormats;
 static PFN_xrCreateSwapchain           g_xrCreateSwapchain;
 static PFN_xrDestroySwapchain         g_xrDestroySwapchain;
-static PFN_xrEnumerateSwapchainImages  g_xrEnumerateSwapchainImages;
+static PFN_xrEnumerateSwapchainImages g_xrEnumerateSwapchainImages;
 static PFN_xrAcquireSwapchainImage     g_xrAcquireSwapchainImage;
 static PFN_xrWaitSwapchainImage        g_xrWaitSwapchainImage;
-static PFN_xrReleaseSwapchainImage     g_xrReleaseSwapchainImage;
+static PFN_xrReleaseSwapchainImage    g_xrReleaseSwapchainImage;
 static PFN_xrCreateReferenceSpace      g_xrCreateReferenceSpace;
 
 // ---------------------------------------------------------------------------
 // Zielprozess-Filter: Implizite Layer laden systemweit. Der Layer darf nur
-// im RaceRoom-Prozess aktiv werden (RRRE.exe / RaceRoom*.exe); in jedem
-// anderen OpenXR-Prozess bleibt er vollstaendig passiv (kein Hook, keine
-// zusaetzliche Erweiterung, alles wird durchgereicht).
+// im RaceRoom-Prozess aktiv werden; in jedem anderen OpenXR-Prozess bleibt
+// er vollstaendig passiv.
 // ---------------------------------------------------------------------------
 
 static bool g_targetProcess = false;
@@ -158,24 +182,38 @@ static bool IsRaceRoomProcess() {
 // Per-Session Overlay-Zustand
 // ---------------------------------------------------------------------------
 
+struct SlotState {             // v3: ein Quad je Overlay
+    bool        ok = false;
+    XrSwapchain swapchain = XR_NULL_HANDLE;
+    std::vector<XrSwapchainImageD3D11KHR> images;
+    std::vector<uint8_t> pixels;
+    uint32_t    texW = 0;
+    uint32_t    texH = 0;
+    XrCompositionLayerQuad quad{};
+};
+
 struct OverlayState {
     bool        initialized = false;   // Init versucht (egal ob erfolgreich)
     bool        ok = false;            // Overlay einsatzbereit
-    XrSwapchain swapchain = XR_NULL_HANDLE;
+    XrSwapchain swapchain = XR_NULL_HANDLE;   // Legazy-Pfad (v1/v2/Testmuster)
     XrSpace     space = XR_NULL_HANDLE;
     ID3D11Device*        device = nullptr;   // keine Referenz addiert
     ID3D11DeviceContext* context = nullptr;  // Immediate Context (keine Ref)
     std::vector<XrSwapchainImageD3D11KHR> images;
     XrCompositionLayerQuad quad{};
-    std::vector<uint8_t> pixels;      // CPU-Bildpuffer (BGRA)
-    uint32_t    texW = 0;             // aktuelle Leinwandgroesse
+    std::vector<uint8_t> pixels;
+    uint32_t    texW = 0;
     uint32_t    texH = 0;
-    int64_t     format = 0;           // gewaehltes Swapchain-Format
-    uint32_t    lastFrame = 0xFFFFFFFFu;  // frame-Stand des letzten PitBoss-Bildes
-    HANDLE      shm = nullptr;        // Shared Memory mit PitBoss
-    SharedHeader* shmHeader = nullptr;
-    uint8_t*    shmPixels = nullptr;
+    int64_t     format = 0;
+    uint32_t    lastFrame = 0xFFFFFFFFu;
+    HANDLE      shm = nullptr;
+    SharedHeader*  shmHeader = nullptr;    // v1/v2-Sicht
+    SharedHeader3* shmHeader3 = nullptr;  // v3-Sicht (gleicher Zeiger)
     uint64_t    tick = 0;
+    // v3: Slots._resize() NUR einmal beim Init (stabile Adressen fuer
+    // XrCompositionLayerQuad im Layer-Vektor von xrEndFrame).
+    std::vector<SlotState> slots;
+    bool        slotsSeen = false;   // mindestens einmal v3-Daten gesehen
 };
 
 static std::mutex g_stateMutex;
@@ -186,8 +224,8 @@ static std::map<XrSession, OverlayState> g_sessions;
 // ---------------------------------------------------------------------------
 
 static void CloseShm(OverlayState* st) {
-    st->shmPixels = nullptr;
     st->shmHeader = nullptr;
+    st->shmHeader3 = nullptr;
     if (st->shm) { CloseHandle(st->shm); st->shm = nullptr; }
 }
 
@@ -199,7 +237,18 @@ static void TryOpenShm(OverlayState* st) {
     if (!p) { CloseHandle(h); return; }
     st->shm = h;
     st->shmHeader = reinterpret_cast<SharedHeader*>(p);
-    st->shmPixels = reinterpret_cast<uint8_t*>(p) + sizeof(SharedHeader);
+    st->shmHeader3 = reinterpret_cast<SharedHeader3*>(p);
+}
+
+static bool ShmValidV3(const OverlayState* st) {
+    const SharedHeader3* h = st->shmHeader3;
+    if (!h) return false;
+    if (h->magic != kMagic || h->version != kVersionV3) return false;
+    if (h->maxSlots == 0 || h->maxSlots > 4 * kMaxSlots) return false;
+    if (h->count > h->maxSlots) return false;
+    // Tabelle muss im Mapping liegen
+    if (20ull + (uint64_t)h->maxSlots * kSlotSize > kShmBytes) return false;
+    return true;
 }
 
 static bool ShmValid(const OverlayState* st) {
@@ -211,8 +260,8 @@ static bool ShmValid(const OverlayState* st) {
         && st->shmHeader->height > 0 && st->shmHeader->height <= kMaxCanvas;
 }
 
-// Leinwandgroesse: mit gueltigem PitBoss-Anschluss dessen Masse, sonst
-// der Standard 512x256 (altes Einzeltafel-Format / Testmuster).
+// Leinwandgroesse (Legazy-Pfad): mit gueltigem v1/v2-Anschluss dessen Masse,
+// sonst der Standard 512x256 (Testmuster).
 static void ShmCanvasSize(const OverlayState* st, uint32_t& w, uint32_t& h) {
     w = kTexWidth;
     h = kTexHeight;
@@ -238,14 +287,27 @@ static void ApplyShmPose(OverlayState* st) {
     }
 }
 
+// Kippung (pitch/yaw) -> OpenXR-Quaternion. q = qY(yaw) * qX(pitch);
+// Reihenfolge: zuerst um X kippen, dann um Y drehen.
+static XrQuaternionf TiltToQuaternion(float pitch, float yaw) {
+    const float sp = sinf(pitch * 0.5f), cp = cosf(pitch * 0.5f);
+    const float sy = sinf(yaw   * 0.5f), cy = cosf(yaw   * 0.5f);
+    XrQuaternionf q;
+    q.x = cy * sp;
+    q.y = sy * cp;
+    q.z = -sy * sp;
+    q.w = cy * cp;
+    return q;
+}
+
 // ---------------------------------------------------------------------------
-// Bildinhalt: PitBoss-Frame oder Testmuster
+// Bildinhalt: PitBoss-Frame oder Testmuster (Legazy-Pfad, v1/v2)
 // ---------------------------------------------------------------------------
 
 static void FillPixels(OverlayState* st) {
-    // PitBoss-Bild uebernehmen, wenn vorhanden (Monitor-Spiegel)
+    // PitBoss-Bild uebernehmen, wenn vorhanden (Monitor-Spiegel v1/v2)
     if (ShmValid(st)) {
-        memcpy(st->pixels.data(), st->shmPixels,
+        memcpy(st->pixels.data(), st->shmHeader + 1,
                static_cast<size_t>(st->texW) * st->texH * 4);
         return;
     }
@@ -296,10 +358,15 @@ static void FillPixels(OverlayState* st) {
 // Overlay-Initialisierung pro Session
 // ---------------------------------------------------------------------------
 
-// Leinwand (Swapchain + Images + Geraet) in der Groesse cw x ch anlegen.
-// Wird beim ersten Init und bei Groessenaenderungen aus PitBoss benutzt.
+// Leinwand (Swapchain + Images) in der Groesse cw x ch anlegen. Wird fuer
+// die Legazy-Leinwand UND (ohne device/context-Anfassung) fuer v3-Slots
+// benutzt. slotDevice=true: Geraet/Context nur aus der Legazy-Leinwand
+// ziehen (Slots teilen sie).
 static bool CreateCanvasImpl(XrSession session, OverlayState* st,
-                             uint32_t cw, uint32_t ch) {
+                             uint32_t cw, uint32_t ch,
+                             XrSwapchain* outSwapchain,
+                             std::vector<XrSwapchainImageD3D11KHR>& outImages,
+                             bool takeDevice) {
     XrSwapchainCreateInfo sci{XR_TYPE_SWAPCHAIN_CREATE_INFO};
     sci.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT
                    | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
@@ -310,33 +377,40 @@ static bool CreateCanvasImpl(XrSession session, OverlayState* st,
     sci.arraySize = 1;
     sci.mipCount = 1;
     sci.sampleCount = 1;
-    XrResult r = g_xrCreateSwapchain(session, &sci, &st->swapchain);
+    XrSwapchain swap = XR_NULL_HANDLE;
+    XrResult r = g_xrCreateSwapchain(session, &sci, &swap);
     if (r != XR_SUCCESS) {
         Log("xrCreateSwapchain fehlgeschlagen (%d)", (int)r);
         return false;
     }
     uint32_t imgCount = 0;
-    if (g_xrEnumerateSwapchainImages(st->swapchain, 0, &imgCount, nullptr) != XR_SUCCESS
+    if (g_xrEnumerateSwapchainImages(swap, 0, &imgCount, nullptr) != XR_SUCCESS
         || imgCount == 0) {
+        g_xrDestroySwapchain(swap);
         Log("keine Swapchain-Images");
         return false;
     }
-    st->images.resize(imgCount);
-    for (auto& img : st->images) img.type = XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR;
-    if (g_xrEnumerateSwapchainImages(st->swapchain, imgCount, &imgCount,
-            reinterpret_cast<XrSwapchainImageBaseHeader*>(st->images.data())) != XR_SUCCESS) {
+    outImages.resize(imgCount);
+    for (auto& img : outImages) img.type = XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR;
+    if (g_xrEnumerateSwapchainImages(swap, imgCount, &imgCount,
+            reinterpret_cast<XrSwapchainImageBaseHeader*>(outImages.data())) != XR_SUCCESS) {
+        outImages.clear();
+        g_xrDestroySwapchain(swap);
         Log("xrEnumerateSwapchainImages (zweiter Durchlauf) fehlgeschlagen");
         return false;
     }
-    ID3D11Texture2D* tex = st->images[0].texture;
-    if (!tex) { Log("Swapchain-Image ohne Textur"); return false; }
-    tex->GetDevice(&st->device);
-    if (st->device) st->device->GetImmediateContext(&st->context);
-    if (!st->context) { Log("kein Immediate Context"); return false; }
-    st->texW = cw;
-    st->texH = ch;
-    st->pixels.assign(static_cast<size_t>(cw) * ch * 4, 0xFF);
-    st->lastFrame = 0xFFFFFFFFu;
+    if (takeDevice) {
+        ID3D11Texture2D* tex = outImages[0].texture;
+        if (!tex) { outImages.clear(); g_xrDestroySwapchain(swap);
+                    Log("Swapchain-Image ohne Textur"); return false; }
+        tex->GetDevice(&st->device);
+        if (st->device) st->device->GetImmediateContext(&st->context);
+        if (!st->context) {
+            outImages.clear(); g_xrDestroySwapchain(swap);
+            Log("kein Immediate Context"); return false;
+        }
+    }
+    *outSwapchain = swap;
     return true;
 }
 
@@ -384,20 +458,31 @@ static void InitOverlayImpl(XrSession session, OverlayState* st) {
 
     st->format = chosen;
     TryOpenShm(st);
+
+    // v3: Slot-Tabelle EINMAL fester Groesse anlegen - die Adressen der
+    // XrCompositionLayerQuad darin muessen stabil bleiben, weil
+    // xrEndFrame sie je Frame referenziert.
+    st->slots.resize(kMaxSlots);
+
     uint32_t cw = kTexWidth, ch = kTexHeight;
     ShmCanvasSize(st, cw, ch);
     Log("Init 2-4/7: Leinwand %ux%u (Format %lld) anlegen",
         cw, ch, (long long)chosen);
-    if (!CreateCanvasImpl(session, st, cw, ch)) return;
+    if (!CreateCanvasImpl(session, st, cw, ch, &st->swapchain, st->images, true)) {
+        return;
+    }
+    st->texW = cw;
+    st->texH = ch;
+    st->pixels.assign(static_cast<size_t>(cw) * ch * 4, 0xFF);
+    st->lastFrame = 0xFFFFFFFFu;
     Log("Swapchain mit %u Images bereit", (uint32_t)st->images.size());
 
-    // Fester Referenzraum (LOCAL) fuer die PoC-Tafel
+    // Fester Referenzraum (LOCAL) fuer alle Tafeln
     Log("Init 5/7: Referenzraum erstellen");
     XrReferenceSpaceCreateInfo rsci{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
     rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
     rsci.poseInReferenceSpace = XrPosef{{0, 0, 0, 1}, {0.f, 0.f, 0.f}};
     if (g_xrCreateReferenceSpace(session, &rsci, &st->space) != XR_SUCCESS) {
-        Log("xrCreateReferenceSpace fehlgeschlagen");
         st->space = XR_NULL_HANDLE;
     }
     if (st->space == XR_NULL_HANDLE) {
@@ -409,13 +494,10 @@ static void InitOverlayImpl(XrSession session, OverlayState* st) {
 
     st->quad.type = XR_TYPE_COMPOSITION_LAYER_QUAD;
     st->quad.next = nullptr;
-    // 0.4.0.2: Alpha-Blending erzwingen - ohne dieses Flag ignoriert die
-    // Laufzeit den Alpha-Kanal der Leinwand und rendert den transparenten
-    // Hintergrund opak schwarz (Marcels Praxistest 07.11.2026).
-    // Name laut openxr.h 1.1.45: BLEND_TEXTURE_SOURCE_ALPHA (nicht
-    // "BLEND_TEXTURE_ALPHA"); ohne UNPREMULTIPLIED_ALPHA erwartet OpenXR
-    // vormultiplizertes Alpha - PitBoss komponiert bereits auf ein
-    // QImage.Format_ARGB32_Premultiplied.
+    // Alpha-Blending erzwingen - ohne dieses Flag ignoriert die Laufzeit
+    // den Alpha-Kanal und rendert den transparenten Hintergrund opak
+    // schwarz. PitBoss komponiert auf Format_ARGB32_Premultiplied, deshalb
+    // KEIN UNPREMULTIPLIED-Flag (openxr.h 1.1.45, 0.4.0.2 gelernt).
     st->quad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
     st->quad.space = st->space;
     st->quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
@@ -425,15 +507,118 @@ static void InitOverlayImpl(XrSession session, OverlayState* st) {
     st->quad.pose.orientation = {0, 0, 0, 1};
     ApplyShmPose(st);
 
-    Log("Init 7/7: Quad vorbereitet");
+    // v3-Quads mit denselben Grundeinstellungen vorbereiten
+    for (auto& ss : st->slots) {
+        ss.quad.type = XR_TYPE_COMPOSITION_LAYER_QUAD;
+        ss.quad.next = nullptr;
+        ss.quad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+        ss.quad.space = st->space;
+        ss.quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+        ss.quad.subImage.imageArrayIndex = 0;
+        ss.quad.pose.orientation = {0, 0, 0, 1};
+    }
+
+    Log("Init 7/7: Quads vorbereitet");
     st->ok = true;
-    Log("Overlay-Init OK - Tafel wird ab jetzt eingereicht");
+    Log("Overlay-Init OK - Tafeln werden ab jetzt eingereicht");
 }
 
-// Bild in die Swapchain schreiben. Wird pro xrEndFrame aufgerufen.
+// ---------------------------------------------------------------------------
+// v3: Slots aktualisieren (ein Quad je Overlay)
+// ---------------------------------------------------------------------------
+
+static void DestroySlotSwapchain(SlotState* ss) {
+    if (ss->swapchain) {
+        g_xrDestroySwapchain(ss->swapchain);
+        ss->swapchain = XR_NULL_HANDLE;
+    }
+    ss->images.clear();
+    ss->texW = ss->texH = 0;
+    ss->ok = false;
+}
+
+static void UpdateSlotsImpl(XrSession session, OverlayState* st) {
+    const SharedHeader3* hdr = st->shmHeader3;
+    const uint8_t* base = reinterpret_cast<const uint8_t*>(hdr);
+    const bool contentChanged = (hdr->frame != st->lastFrame);
+
+    for (uint32_t i = 0; i < hdr->count && i < kMaxSlots; ++i) {
+        SlotHeader sh;
+        memcpy(&sh, base + 20 + (size_t)i * kSlotSize, sizeof(sh));
+        SlotState* ss = &st->slots[i];
+        if (!sh.used || sh.w == 0 || sh.h == 0
+            || sh.w > kMaxCanvas || sh.h > kMaxCanvas
+            || (uint64_t)sh.offset + (uint64_t)sh.w * sh.h * 4 > kShmBytes
+            || sh.offset < kDataStart) {
+            ss->ok = false;   // ungueltiger Slot: Tafel wegnehmen
+            continue;
+        }
+        // Pose JE Frame uebernehmen (billig, kein Textur-Transfer noetig)
+        if (sh.quadW > 0.005f && sh.quadW < 20.0f
+            && sh.quadH > 0.005f && sh.quadH < 20.0f) {
+            ss->quad.size = {sh.quadW, sh.quadH};
+            ss->quad.pose.position = {sh.posX, sh.posY, sh.posZ};
+            ss->quad.pose.orientation = TiltToQuaternion(sh.pitch, sh.yaw);
+            ss->ok = true;
+        } else {
+            ss->ok = false;
+            continue;
+        }
+        // Textur nur bei neuem frame-Zaehler anfassen (Performance, 0.4.1.1)
+        if (!contentChanged && ss->swapchain && ss->texW == sh.w && ss->texH == sh.h)
+            continue;
+        // Groesse geaendert -> Swapchain neu anlegen
+        if (!ss->swapchain || ss->texW != sh.w || ss->texH != sh.h) {
+            DestroySlotSwapchain(ss);
+            if (!CreateCanvasImpl(session, st, sh.w, sh.h,
+                                  &ss->swapchain, ss->images, false)) {
+                ss->ok = false;
+                continue;
+            }
+            ss->texW = sh.w;
+            ss->texH = sh.h;
+            ss->pixels.assign((size_t)sh.w * sh.h * 4, 0);
+            ss->quad.subImage.swapchain = ss->swapchain;
+            ss->quad.subImage.imageRect = {{0, 0}, {int32_t(sh.w), int32_t(sh.h)}};
+        }
+        uint32_t idx = 0;
+        if (g_xrAcquireSwapchainImage(ss->swapchain, nullptr, &idx) != XR_SUCCESS) {
+            ss->ok = false;
+            continue;
+        }
+        XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+        wi.timeout = XR_INFINITE_DURATION;
+        if (g_xrWaitSwapchainImage(ss->swapchain, &wi) != XR_SUCCESS) {
+            g_xrReleaseSwapchainImage(ss->swapchain, nullptr);
+            ss->ok = false;
+            continue;
+        }
+        memcpy(ss->pixels.data(), base + sh.offset,
+               (size_t)sh.w * sh.h * 4);
+        st->context->UpdateSubresource(
+            ss->images[idx].texture, 0, nullptr,
+            ss->pixels.data(), ss->texW * 4, 0);
+        g_xrReleaseSwapchainImage(ss->swapchain, nullptr);
+    }
+    // Slots hinter count deaktivieren (Overlays zugemacht)
+    for (uint32_t i = hdr->count; i < kMaxSlots; ++i) {
+        st->slots[i].ok = false;
+    }
+    st->slotsSeen = true;
+    if (contentChanged) st->lastFrame = hdr->frame;
+}
+
+// Legazy-Pfad (v1/v2/Testmuster): Bild in die Swapchain schreiben.
 static void UpdateTextureImpl(XrSession session, OverlayState* st) {
     if (!st->ok || !st->swapchain) return;
     TryOpenShm(st);
+
+    // v3: eigene Pflege der Slots
+    if (ShmValidV3(st)) {
+        UpdateSlotsImpl(session, st);
+        return;
+    }
+
     // PitBoss kann die Leinwand-Groesse aendern (z. B. andere Aufloesung):
     // Dann wird die Swapchain in der neuen Groesse neu angelegt.
     uint32_t cw = 0, ch = 0;
@@ -442,11 +627,14 @@ static void UpdateTextureImpl(XrSession session, OverlayState* st) {
         Log("Leinwand-Groesse geaendert: %ux%u - Swapchain neu anlegen", cw, ch);
         g_xrDestroySwapchain(st->swapchain);
         st->swapchain = XR_NULL_HANDLE;
-        if (!CreateCanvasImpl(session, st, cw, ch)) {
+        if (!CreateCanvasImpl(session, st, cw, ch, &st->swapchain, st->images, true)) {
             Log("Swapchain-Neuaufbau fehlgeschlagen - Tafel deaktiviert");
             st->ok = false;
             return;
         }
+        st->texW = cw;
+        st->texH = ch;
+        st->pixels.assign(static_cast<size_t>(cw) * ch * 4, 0xFF);
         st->quad.subImage.swapchain = st->swapchain;
         st->quad.subImage.imageRect = {{0, 0}, {int32_t(st->texW), int32_t(st->texH)}};
     }
@@ -466,7 +654,6 @@ static void UpdateTextureImpl(XrSession session, OverlayState* st) {
     }
     FillPixels(st);
     if (ShmValid(st)) st->lastFrame = st->shmHeader->frame;
-    // UpdateSubresource auf den Immediate Context des Spiels.
     st->context->UpdateSubresource(
         st->images[idx].texture, 0, nullptr,
         st->pixels.data(), st->texW * 4, 0);
@@ -514,15 +701,31 @@ static XrResult XRAPI_PTR LayerEndFrame(XrSession session,
     OverlayState* st = &g_sessions[session];
     if (!st->initialized) InitOverlay(session, st);
 
-    bool showQuad = st->ok;
-    if (showQuad) UpdateTexture(session, st);
+    if (st->ok) UpdateTexture(session, st);
 
     std::vector<const XrCompositionLayerBaseHeader*> layers(
         frameEndInfo->layers, frameEndInfo->layers + frameEndInfo->layerCount);
-    if (showQuad) {
+
+    // v3: EIN QUAD JE BELEGTEM SLOT. Im v3-Modus wird die Legazy-Tafel
+    // nicht zusaetzlich eingereicht (kein Testmuster, keine Doppel-Tafel).
+    bool anySlot = false;
+    if (st->ok && st->slotsSeen && ShmValidV3(st)) {
+        const SharedHeader3* hdr = st->shmHeader3;
+        for (uint32_t i = 0; i < hdr->count && i < kMaxSlots; ++i) {
+            SlotState* ss = &st->slots[i];
+            if (!ss->ok) continue;
+            layers.push_back(
+                reinterpret_cast<const XrCompositionLayerBaseHeader*>(&ss->quad));
+            anySlot = true;
+        }
+    }
+    // Legazy-Pfad (v1/v2, Testmuster): Einzel-Tafer reicht der Slotlin nur,
+    // wenn PitBoss NICHT im v3-Modus schreibt.
+    if (st->ok && !anySlot && !(ShmValidV3(st) && st->slotsSeen)) {
         layers.push_back(
             reinterpret_cast<const XrCompositionLayerBaseHeader*>(&st->quad));
     }
+
     XrFrameEndInfo fe = *frameEndInfo;
     fe.layerCount = static_cast<uint32_t>(layers.size());
     fe.layers = layers.data();
@@ -630,11 +833,7 @@ extern "C" PVR_EXPORT XrResult XRAPI_CALL xrCreateApiLayerInstance(
     g_instance = *instance;
 
     // Alle benoetigten Runtime-Funktionen aufloesen. WICHTIG:
-    // xrGetInstanceProcAddr erwartet die OFFIZIELLEN OpenXR-Namen. Ein Makro
-    // ueber #fn wuerde den Variablennamen ("g_xrEnumerateSwapchainFormats")
-    // uebergeben - die Funktion wird dann nicht gefunden, der Zeiger bleibt
-    // null und der Overlay-Init scheitert beim ersten Aufruf (Vorfall
-    // 07.11.2026: Praxistest-Log brach nach "Overlay-Init startet" ab).
+    // xrGetInstanceProcAddr erwartet die OFFIZIELLEN OpenXR-Namen.
     struct GpaEntry { const char* name; PFN_xrVoidFunction* target; };
     GpaEntry gpaTable[] = {
         {"xrEnumerateSwapchainFormats",
