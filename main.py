@@ -33,7 +33,7 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.2.2 Beta"
+APP_VERSION = "0.4.2.3 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -8124,7 +8124,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 pass
         try:
             if on:
-                self.log.append("VR-Anordnen aktiv: Pfeiltasten = verschieben (Shift = fein), Bild auf/ab = Groesse, Einfg/Entf = Abstand, Pos1/Ende = vertikal kippen, Komma/Punkt = horizontal kippen, Leertaste = naechstes Overlay, Strg+Alt+1..9 = Overlay direkt auswählen, " + str(self.hotkey_config.get("vr_arrange", "F4")) + " = Modus aus.")
+                self.log.append("VR-Anordnen aktiv: Strg+Alt+Pfeile = verschieben (zusaetzlich Shift = fein), Strg+Alt+Bild auf/ab = Groesse, Strg+Alt+Einfg/Entf = Abstand, Strg+Alt+Pos1/Ende = vertikal kippen, Strg+Alt+Komma/Punkt = horizontal kippen, Strg+Alt+Leertaste = naechstes Overlay, Strg+Alt+1..9 = Overlay direkt auswählen, " + str(self.hotkey_config.get("vr_arrange", "F4")) + " = Modus aus.")
             else:
                 self.log.append("VR-Anordnen aus.")
         except Exception:
@@ -9169,6 +9169,22 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         # 0.4.1.0: Tasten des Anordnen-Modus - nur solange der Modus aktiv
         # ist (Pfeile, Bild auf/ab, Leertaste; Shift = Feinschritt).
         if getattr(self, "_vr_arrange", False):
+            # 0.4.2.3: Alle Justage-Tasten NUR mit gehaltenem Strg+Alt auswerten -
+            # RaceRoom belegt die Nackttasten (Pfeile, Bild auf/ab, Pos1/Ende,
+            # Komma/Punkt, Einfg/Entf, Leertaste) fest fuer die Kamerasteuerung.
+            # Strg+Alt-Kombinationen laesst das Spiel unberuehrt.
+            if not _sel_mod:
+                for key, vk, handler in (
+                    ("arr_left", 0x25, None), ("arr_right", 0x27, None),
+                    ("arr_up", 0x26, None), ("arr_down", 0x28, None),
+                    ("arr_grow", 0x21, None), ("arr_shrink", 0x22, None),
+                    ("arr_next", 0x20, None), ("arr_near", 0x2D, None),
+                    ("arr_far", 0x2E, None), ("arr_pitchup", 0x24, None),
+                    ("arr_pitchdown", 0x23, None), ("arr_yawleft", 0xBC, None),
+                    ("arr_yawright", 0xBE, None),
+                ):
+                    self.global_hotkey_state[key] = False
+                return
             step = 8 if self._vk_down(0x10) else 32  # VK_SHIFT
             for key, vk, handler in (
                 ("arr_left", 0x25, lambda: self.vr_arrange_move(-step, 0)),
