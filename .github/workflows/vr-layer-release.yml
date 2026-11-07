@@ -1,0 +1,75 @@
+name: VR-Layer PoC Release
+
+# Stellt die VR-Layer-DLL als oeffentlich downloadbares Pre-Release bereit.
+# Wichtig: Tag "poc-vr-layer" beginnt absichtlich NICHT mit "v" (kein Build &
+# Release des Setups) und ist ein Pre-Release (updater.py ignoriert es, da
+# /releases/latest Pre-Releases ueberspringt).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'vr_layer/**'
+      - '.github/workflows/vr-layer-release.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: CMake konfigurieren (x64)
+        run: cmake -S vr_layer -B vr_layer/build -A x64
+
+      - name: DLL bauen (Release)
+        run: cmake --build vr_layer/build --config Release
+
+      - name: Artefakte pruefen
+        shell: pwsh
+        run: |
+          $dir = "vr_layer\build\Release"
+          if (-not (Test-Path "$dir\XR_APILAYER_PitBossR3E_VR.dll")) { throw "DLL fehlt im Build" }
+          if (-not (Test-Path "$dir\pitboss_vr_layer.json")) { throw "Manifest fehlt im Build" }
+          Get-ChildItem $dir | ForEach-Object { Write-Host ("{0,8:N1} KB  {1}" -f ($_.Length/1KB), $_.Name) }
+
+      - name: LIESMICH fuer den Download beilegen
+        shell: pwsh
+        run: |
+          @'
+          PitBoss R3E - VR-Layer PoC (Testtafel)
+          =====================================
+          1. Beide Dateien (XR_APILAYER_PitBossR3E_VR.dll + pitboss_vr_layer.json)
+             in einen Ordner legen, z.B. C:\PitBossVR
+          2. Systemweite Aktivierung (Eingabeaufforderung, je eine Zeile):
+               setx XR_APILAYER_PATH "C:\PitBossVR"
+               setx XR_API_LAYER_PATH "X:XR_APILAYER_PitBossR3E_VR"
+          3. Steam JEDES MAL neu starten, dann RaceRoom als "RaceRoom Racing
+             Experience VR" starten (Rechtsklick im Steam → VR-Variante).
+          4. Erwartung: Tafel mit hellem Rahmen und wanderndem gruenen Balken.
+
+          Deaktivieren: beide Variablen wieder loeschen:
+               reg delete "HKCU\Environment" /v XR_APILAYER_PATH /f
+               reg delete "HKCU\Environment" /v XR_API_LAYER_PATH /f
+          '@ | Set-Content -Encoding UTF8 vr_layer\build\Release\LIESMICH.txt
+
+      - name: Pre-Release mit DLL erstellen/aktualisieren
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "poc-vr-layer"
+          $dir = "vr_layer\build\Release"
+          gh release delete $tag --yes --cleanup-tag 2>$null
+          gh release create $tag `
+            --prerelease `
+            --target $env:GITHUB_SHA `
+            --title "VR-Layer PoC (Testtafel)" `
+            --notes "Automatisch gebaute VR-Layer-DLL fuer den Praxis-Test. Kein Teil des Setups; Pre-Release, wird vom Updater ignoriert." `
+            "$dir\XR_APILAYER_PitBossR3E_VR.dll" `
+            "$dir\pitboss_vr_layer.json" `
+            "$dir\LIESMICH.txt"
