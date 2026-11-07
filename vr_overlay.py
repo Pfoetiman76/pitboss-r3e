@@ -73,6 +73,8 @@ DEFAULTS = {
     "vr_hidden": [],          # Overlay-Klassen, die nicht gespiegelt werden
     "vr_debug": False,        # 0.4.0.4: Diagnose - Magenta-Rahmen auf der
                               # Leinwand + Spiegel-Fakten im Live-Log
+    "vr_zoom": 1.0,           # 0.4.0.9: VR-Lesbarkeit - Overlays auf der
+                              # Tafel vergroessern (1.0 = 1:1 wie Monitor)
 }
 
 
