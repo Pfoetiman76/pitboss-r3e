@@ -56,13 +56,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
+          $bt = [string][char]96
+          $fence = $bt + $bt + $bt
+          $nl = [string][char]10
           $parts = @()
           foreach ($f in @("ci.log", "build.log")) {
             if (Test-Path $f) {
-              $tail = (Get-Content $f | Select-Object -Last 60) -join "`n"
-              $parts += "### $f" + "`n`n```" + "`n" + $tail + "`n" + "```"
+              $tail = (Get-Content $f | Select-Object -Last 60) -join $nl
+              $parts += ("### " + $f + $nl + $fence + $nl + $tail + $nl + $fence)
             }
           }
           if ($parts.Count -eq 0) { $parts = @("Keine Logdatei gefunden (Fehler vor CMake).") }
-          $body = "VR-Layer CI fehlgeschlagen auf ``" + $env:GITHUB_SHA.Substring(0,8) + "``" + "`n`n" + ($parts -join "`n`n")
+          $body = ("VR-Layer CI fehlgeschlagen auf " + $bt + $bt + $env:GITHUB_SHA.Substring(0,8) + $bt + $bt + $nl + $nl + ($parts -join ($nl + $nl)))
           gh issue comment 2 --body $body

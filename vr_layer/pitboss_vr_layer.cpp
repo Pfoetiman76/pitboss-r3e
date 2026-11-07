@@ -8,7 +8,7 @@
 //
 // Architektur:
 //   PitBoss (Python) rendert die Overlay-Inhalte als BGRA-Bild in den
-//   Shared-Memory-Puffer "Local\PitBossR3E_VR" (Header: magic, version,
+//   Shared-Memory-Puffer "Local\\PitBossR3E_VR" (Header: magic, version,
 //   width, height, frame). Der Layer liest diesen Puffer und legt ihn als
 //   Quad-Layer ueber die Szene. Fehlt der Puffer (PitBoss laeuft nicht),
 //   zeigt der Layer ein ruhiges Testmuster - so ist der PoC ohne PitBoss
@@ -21,7 +21,7 @@
 //   Prozess (Zielprozess-Filter unten) und verhaelt sich in allen anderen
 //   OpenXR-Anwendungen vollstaendig passiv.
 //
-// Diagnose: jede Log-Meldung wird nach %TEMP%\PitBossVR_layer.log
+// Diagnose: jede Log-Meldung wird nach %TEMP%\\PitBossVR_layer.log
 //   geschrieben (PoC-Hilfsmittel; wird mit der Integration entfernt).
 //
 // Verhandlung: Der aktuelle OpenXR-Loader verlangt zunaechst
@@ -66,7 +66,7 @@
 #endif
 
 // ---------------------------------------------------------------------------
-// Logging: DebugView (nur mit PVR_DEBUG) UND immer %TEMP%\PitBossVR_layer.log
+// Logging: DebugView (nur mit PVR_DEBUG) UND immer %TEMP%\\PitBossVR_layer.log
 // ---------------------------------------------------------------------------
 
 static void Log(const char* fmt, ...) {
@@ -78,7 +78,7 @@ static void Log(const char* fmt, ...) {
 #ifdef PVR_DEBUG
     OutputDebugStringA("[PitBossVR] ");
     OutputDebugStringA(buf);
-    OutputDebugStringA("\n");
+    OutputDebugStringA("\\n");
 #endif
     char path[MAX_PATH];
     if (GetTempPathA(MAX_PATH, path) == 0) return;
@@ -88,7 +88,7 @@ static void Log(const char* fmt, ...) {
                            OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) return;
     char line[620];
-    _snprintf_s(line, sizeof(line), _TRUNCATE, "[%lu] %s\r\n",
+    _snprintf_s(line, sizeof(line), _TRUNCATE, "[%lu] %s\\r\\n",
                 GetTickCount(), buf);
     DWORD written = 0;
     WriteFile(h, line, (DWORD)strlen(line), &written, nullptr);
@@ -387,6 +387,16 @@ static XrResult XRAPI_PTR LayerEndFrame(XrSession session,
 // ---------------------------------------------------------------------------
 // Loader-Verhandlung
 // ---------------------------------------------------------------------------
+
+// Vorwaertsdeklaration: openxr_loader_negotiation.h deklariert
+// xrCreateApiLayerInterface nur bei definiertem XR_EXTENSION_PROTOTYPES
+// (nicht gesetzt). xrNegotiateLoaderApiLayerInterface unten referenziert die
+// Funktion, bevor sie im Quelltext definiert wird - ohne Deklaration
+// compiliert MSVC das nicht (C2065).
+extern "C" PVR_EXPORT XrResult XRAPI_CALL xrCreateApiLayerInstance(
+        const XrInstanceCreateInfo* createInfo,
+        const XrApiLayerCreateInfo* apiLayerInfo,
+        XrInstance* instance);
 
 extern "C" PVR_EXPORT XrResult XRAPI_PTR LayerGetInstanceProcAddr(
         XrInstance instance, const char* name, PFN_xrVoidFunction* function) {
