@@ -413,7 +413,7 @@ extern "C" PVR_EXPORT XrResult XRAPI_PTR LayerGetInstanceProcAddr(
     if (!name || !function) return XR_ERROR_VALIDATION_FAILURE;
     if (!g_targetProcess) g_targetProcess = IsRaceRoomProcess();
     if (g_targetProcess && strcmp(name, "xrEndFrame") == 0) {
-        *function = reinterpret_cast<PFN_xrVoidFunction*>(&LayerEndFrame);
+        *function = reinterpret_cast<PFN_xrVoidFunction>(&LayerEndFrame);
         return XR_SUCCESS;
     }
     return g_nextGPA(instance, name, function);
