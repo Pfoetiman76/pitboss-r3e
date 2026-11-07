@@ -33,7 +33,7 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.0.4 Beta"
+APP_VERSION = "0.4.0.5 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -7921,9 +7921,29 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             p.setOpacity(1.0)
             p.setPen(QPen(QColor(255, 0, 255, 220), 6, Qt.DashLine))
             p.drawRect(8, 8, b.w - 17, b.h - 17)
+            # 0.4.0.5: Diagnose-Fakten direkt auf die Tafel zeichnen - in
+            # der VR lesbar, das Desktop-Log ist in der Brille nicht
+            # ablesbar. Zweizeilig oben links auf schwarzem Kasten.
+            dfont = QFont("Segoe UI")
+            dfont.setPixelSize(max(18, b.h // 45))
+            p.setFont(dfont)
+            fm = QFontMetricsF(dfont)
+            zeile1 = "PitBoss {v}: Rahmen {fr}, Hintergrund {bd} %".format(
+                v=APP_VERSION, fr=("AN" if show_frame else "AUS"), bd=backdrop)
+            zeile2 = "{d} Overlay(s) gespiegelt, Bild #{f}, {w}x{h}, Schreiben {pub}".format(
+                d=drawn, f=getattr(b, "_frame", 0), w=b.w, h=b.h,
+                pub=("OK" if getattr(b, "_pub_ok", True) else "FEHLER"))
+            boxw = max(int(fm.horizontalAdvance(zeile1)), int(fm.horizontalAdvance(zeile2))) + 28
+            lh = int(fm.height())
+            p.fillRect(24, 24, boxw, lh * 2 + 18, QColor(0, 0, 0, 180))
+            p.setPen(QColor(255, 255, 255, 235))
+            ty = 24 + 9 + int(fm.ascent())
+            p.drawText(38, ty, zeile1)
+            p.drawText(38, ty + lh, zeile2)
         p.end()
         prev_last = getattr(b, "_last", now)  # 0.4.0.4: fuer die Altersangabe
         published = b.publish(bytes(canvas.constBits()), now)
+        b._pub_ok = published  # 0.4.0.5: fuer die Diagnose-Anzeige auf der Tafel
         if debug:
             try:
                 if (now - getattr(b, "_dbg_last", 0.0)) >= 5.0:
