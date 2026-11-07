@@ -253,7 +253,7 @@ static void FillPixels(OverlayState* st) {
 // Overlay-Initialisierung pro Session
 // ---------------------------------------------------------------------------
 
-static void InitOverlay(XrSession session, OverlayState* st) {
+static void InitOverlayImpl(XrSession session, OverlayState* st) {
     st->initialized = true;
     st->ok = false;
     Log("xrEndFrame zum ersten Mal gesehen - Overlay-Init startet");
@@ -268,14 +268,19 @@ static void InitOverlay(XrSession session, OverlayState* st) {
         return;
     }
 
+    Log("Init 1/7: Formate abfragen");
     uint32_t count = 0;
     if (g_xrEnumerateSwapchainFormats(session, 0, &count, nullptr) != XR_SUCCESS
         || count == 0) {
         Log("keine Swapchain-Formate");
         return;
     }
+    Log("Formate gefunden: %u", count);
     std::vector<int64_t> formats(count);
-    g_xrEnumerateSwapchainFormats(session, count, &count, formats.data());
+    if (g_xrEnumerateSwapchainFormats(session, count, &count, formats.data()) != XR_SUCCESS) {
+        Log("Formate-Aufruf (zweiter Durchlauf) fehlgeschlagen");
+        return;
+    }
 
     int64_t chosen = 0;
     auto prefer = [&](int64_t f) {
@@ -289,6 +294,7 @@ static void InitOverlay(XrSession session, OverlayState* st) {
     if (!chosen) { Log("kein BGRA/RGBA-Format gefunden"); return; }
     Log("Texturformat gewaehlt: %lld", (long long)chosen);
 
+    Log("Init 2/7: Swapchain erstellen (Format %lld)", (long long)chosen);
     XrSwapchainCreateInfo sci{XR_TYPE_SWAPCHAIN_CREATE_INFO};
     sci.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT
                    | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
@@ -305,8 +311,12 @@ static void InitOverlay(XrSession session, OverlayState* st) {
         return;
     }
 
+    Log("Init 3/7: Swapchain-Images auflisten");
     uint32_t imgCount = 0;
-    g_xrEnumerateSwapchainImages(st->swapchain, 0, &imgCount, nullptr);
+    if (g_xrEnumerateSwapchainImages(st->swapchain, 0, &imgCount, nullptr) != XR_SUCCESS) {
+        Log("xrEnumerateSwapchainImages fehlgeschlagen");
+        return;
+    }
     if (imgCount == 0) { Log("keine Swapchain-Images"); return; }
     st->images.resize(imgCount);
     for (auto& img : st->images) img.type = XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR;
@@ -316,6 +326,7 @@ static void InitOverlay(XrSession session, OverlayState* st) {
     Log("Swapchain mit %u Images erstellt", imgCount);
 
     // Geraet aus dem ersten Image beziehen (im Spielprozess erlaubt)
+    Log("Init 4/7: D3D11-Geraet ermitteln");
     ID3D11Texture2D* tex = st->images[0].texture;
     if (!tex) { Log("Swapchain-Image ohne Textur"); return; }
     tex->GetDevice(&st->device);
@@ -323,6 +334,7 @@ static void InitOverlay(XrSession session, OverlayState* st) {
     if (!st->context) { Log("kein Immediate Context"); return; }
 
     // Fester Referenzraum (LOCAL) fuer die PoC-Tafel
+    Log("Init 5/7: Referenzraum erstellen");
     XrReferenceSpaceCreateInfo rsci{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
     rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
     rsci.poseInReferenceSpace = XrPosef{{0, 0, 0, 1}, {0.f, 0.f, 0.f}};
@@ -330,7 +342,12 @@ static void InitOverlay(XrSession session, OverlayState* st) {
         Log("xrCreateReferenceSpace fehlgeschlagen");
         st->space = XR_NULL_HANDLE;
     }
+    if (st->space == XR_NULL_HANDLE) {
+        Log("kein Referenzraum - Overlay-Init abgebrochen (Tafel bleibt aus)");
+        return;
+    }
 
+    Log("Init 6/7: Bildpuffer anlegen");
     st->pixels.assign(kTexWidth * kTexHeight * 4, 0xFF);
 
     st->quad.type = XR_TYPE_COMPOSITION_LAYER_QUAD;
@@ -345,12 +362,13 @@ static void InitOverlay(XrSession session, OverlayState* st) {
     st->quad.pose.position = {0.f, 0.25f, -1.0f};
     st->quad.size = {0.5f, 0.25f};
 
+    Log("Init 7/7: Quad vorbereitet");
     st->ok = true;
     Log("Overlay-Init OK - Tafel wird ab jetzt eingereicht");
 }
 
 // Bild in die Swapchain schreiben
-static void UpdateTexture(OverlayState* st) {
+static void UpdateTextureImpl(OverlayState* st) {
     uint32_t idx = 0;
     if (g_xrAcquireSwapchainImage(st->swapchain, nullptr, &idx) != XR_SUCCESS)
         return;
@@ -366,6 +384,36 @@ static void UpdateTexture(OverlayState* st) {
         st->images[idx].texture, 0, nullptr,
         st->pixels.data(), kTexWidth * 4, 0);
     g_xrReleaseSwapchainImage(st->swapchain, nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// Absturz-Schutz: Ein Fehler im Overlay darf das Spiel niemals mitreissen.
+// __try/__except verlangt Funktionen ohne C++-Objekte mit Destruktor, deshalb
+// liegt die Logik in den *Impl-Funktionen. Die Guards fangen Ausnahmen ab,
+// loggen Code und Adresse und schalten die Tafel kontrolliert aus.
+// ---------------------------------------------------------------------------
+
+static void InitOverlay(XrSession session, OverlayState* st) {
+    __try {
+        InitOverlayImpl(session, st);
+    } __except (Log("AUSNAHME 0x%08lX in Overlay-Init (Adresse %p) - Tafel deaktiviert",
+                    (unsigned long)GetExceptionCode(),
+                    GetExceptionInformation()->ExceptionRecord->ExceptionAddress),
+                EXCEPTION_EXECUTE_HANDLER) {
+        st->initialized = true;
+        st->ok = false;
+    }
+}
+
+static void UpdateTexture(OverlayState* st) {
+    __try {
+        UpdateTextureImpl(st);
+    } __except (st->ok = false,
+                Log("AUSNAHME 0x%08lX in UpdateTexture (Adresse %p) - Tafel deaktiviert",
+                    (unsigned long)GetExceptionCode(),
+                    GetExceptionInformation()->ExceptionRecord->ExceptionAddress),
+                EXCEPTION_EXECUTE_HANDLER) {
+    }
 }
 
 // ---------------------------------------------------------------------------
