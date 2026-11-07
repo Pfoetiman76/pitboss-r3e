@@ -412,7 +412,11 @@ static void InitOverlayImpl(XrSession session, OverlayState* st) {
     // 0.4.0.2: Alpha-Blending erzwingen - ohne dieses Flag ignoriert die
     // Laufzeit den Alpha-Kanal der Leinwand und rendert den transparenten
     // Hintergrund opak schwarz (Marcels Praxistest 07.11.2026).
-    st->quad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_ALPHA_BIT;
+    // Name laut openxr.h 1.1.45: BLEND_TEXTURE_SOURCE_ALPHA (nicht
+    // "BLEND_TEXTURE_ALPHA"); ohne UNPREMULTIPLIED_ALPHA erwartet OpenXR
+    // vormultiplizertes Alpha - PitBoss komponiert bereits auf ein
+    // QImage.Format_ARGB32_Premultiplied.
+    st->quad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
     st->quad.space = st->space;
     st->quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
     st->quad.subImage.swapchain = st->swapchain;
