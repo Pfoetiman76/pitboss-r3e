@@ -8,7 +8,7 @@
 //
 // Architektur:
 //   PitBoss (Python) rendert die Overlay-Inhalte als BGRA-Bild in den
-//   Shared-Memory-Puffer "Local\PitBossR3E_VR" (Header: magic, version,
+//   Shared-Memory-Puffer "Local\\PitBossR3E_VR" (Header: magic, version,
 //   width, height, frame). Der Layer liest diesen Puffer und legt ihn als
 //   Quad-Layer ueber die Szene. Fehlt der Puffer (PitBoss laeuft nicht),
 //   zeigt der Layer ein ruhiges Testmuster - so ist der PoC ohne PitBoss
@@ -21,19 +21,24 @@
 //   Prozess (Zielprozess-Filter unten) und verhaelt sich in allen anderen
 //   OpenXR-Anwendungen vollstaendig passiv.
 //
-// Diagnose: jede Log-Meldung wird nach %TEMP%\PitBossVR_layer.log
+// Diagnose: jede Log-Meldung wird nach %TEMP%\\PitBossVR_layer.log
 //   geschrieben (PoC-Hilfsmittel; wird mit der Integration entfernt).
 //
-// Verhandlung: Loader-Interface v1 (xrCreateApiLayerInstance + nextInfo-
-// Kette), siehe openxr_loader_negotiation.h (mitgeliefert unter third_party).
+// Verhandlung: Der aktuelle OpenXR-Loader verlangt zunaechst
+//   xrNegotiateLoaderApiLayerInterface (Loader-Schnittstelle v1 nach
+//   xrNegotiate*), uebergibt danach aber die klassische
+//   xrCreateApiLayerInstance-Kette mit nextInfo (siehe openxr_loader_
+// negotiation.h). Der Layer implementiert beide Wege; das Manifest MUSS
+//   fuer implizite Layer ausserdem "disable_environment" enthalten, sonst
+//   verwirft der Loader das Manifest stillschweigend (7.11.2026 gelernt).
 //
 // PoC-Einschraenkungen (dokumentiert, Ausbau in Folgeversionen):
 //   - Eine Instanz; pro Session ein Zustand (erste Session aktiv).
 //   - Textur-Updates ueber den Immediate Context des Spiels (D3D11).
 //   - Feste Pose im LOCAL-Raum (oben, etwas vor dem Startpunkt).
 //
-// Build: siehe vr_layer/CMakeLists.txt (Windows, D3D11, vendored Header,
-// kein Netzwerk-Zugriff noetig).
+// Build: siehe vr_layer/CMakeLists.txt (Windows, D3D11, statische CRT,
+// vendored Header, kein Netzwerk-Zugriff noetig).
 // ---------------------------------------------------------------------------
 
 #define XR_USE_PLATFORM_WIN32
@@ -63,7 +68,7 @@
 #endif
 
 // ---------------------------------------------------------------------------
-// Logging: DebugView (nur mit PVR_DEBUG) UND immer %TEMP%\PitBossVR_layer.log
+// Logging: DebugView (nur mit PVR_DEBUG) UND immer %TEMP%\\PitBossVR_layer.log
 // ---------------------------------------------------------------------------
 
 static void Log(const char* fmt, ...) {
@@ -75,7 +80,7 @@ static void Log(const char* fmt, ...) {
 #ifdef PVR_DEBUG
     OutputDebugStringA("[PitBossVR] ");
     OutputDebugStringA(buf);
-    OutputDebugStringA("\n");
+    OutputDebugStringA("\\n");
 #endif
     char path[MAX_PATH];
     if (GetTempPathA(MAX_PATH, path) == 0) return;
@@ -85,7 +90,7 @@ static void Log(const char* fmt, ...) {
                            OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) return;
     char line[620];
-    _snprintf_s(line, sizeof(line), _TRUNCATE, "[%lu] %s\r\n",
+    _snprintf_s(line, sizeof(line), _TRUNCATE, "[%lu] %s\\r\\n",
                 GetTickCount(), buf);
     DWORD written = 0;
     WriteFile(h, line, (DWORD)strlen(line), &written, nullptr);
@@ -382,7 +387,7 @@ static XrResult XRAPI_PTR LayerEndFrame(XrSession session,
 }
 
 // ---------------------------------------------------------------------------
-// Loader-Verhandlung (Interface v1, siehe openxr_loader_negotiation.h)
+// Loader-Verhandlung
 // ---------------------------------------------------------------------------
 
 extern "C" PVR_EXPORT XrResult XRAPI_PTR LayerGetInstanceProcAddr(
@@ -394,6 +399,32 @@ extern "C" PVR_EXPORT XrResult XRAPI_PTR LayerGetInstanceProcAddr(
         return XR_SUCCESS;
     }
     return g_nextGPA(instance, name, function);
+}
+
+// Schnittstelle, die der aktuelle Loader ZUERST aufruft. Der Loader startet
+// danach die klassische xrCreateApiLayerInstance-Kette (unten) mit dem
+// hier angekuendigten createApiLayerInstance.
+extern "C" PVR_EXPORT XrResult XRAPI_CALL xrNegotiateLoaderApiLayerInterface(
+        const XrNegotiateLoaderInfo* loaderInfo,
+        const char* layerName,
+        XrNegotiateApiLayerRequest* apiLayerRequest) {
+    if (!loaderInfo || !layerName || !apiLayerRequest) {
+        return XR_ERROR_VALIDATION_FAILURE;
+    }
+    if (loaderInfo->structType != XR_LOADER_INTERFACE_STRUCT_LOADER_INFO
+        || loaderInfo->minInterfaceVersion > XR_CURRENT_LOADER_API_LAYER_VERSION) {
+        return XR_ERROR_VALIDATION_FAILURE;
+    }
+    Log("xrNegotiateLoaderApiLayerInterface: Layer '%s'", layerName);
+
+    apiLayerRequest->structType = XR_LOADER_INTERFACE_STRUCT_API_LAYER_REQUEST;
+    apiLayerRequest->structVersion = XR_API_LAYER_INFO_STRUCT_VERSION;
+    apiLayerRequest->structSize = sizeof(XrNegotiateApiLayerRequest);
+    apiLayerRequest->layerInterfaceVersion = XR_CURRENT_LOADER_API_LAYER_VERSION;
+    apiLayerRequest->layerApiVersion = XR_CURRENT_API_VERSION;
+    apiLayerRequest->getInstanceProcAddr = &LayerGetInstanceProcAddr;
+    apiLayerRequest->createApiLayerInstance = &xrCreateApiLayerInstance;
+    return XR_SUCCESS;
 }
 
 extern "C" PVR_EXPORT XrResult XRAPI_CALL xrCreateApiLayerInstance(
@@ -446,7 +477,7 @@ extern "C" PVR_EXPORT XrResult XRAPI_CALL xrCreateApiLayerInstance(
     g_instance = *instance;
 
     // Alle benoetigten Runtime-Funktionen aufloesen
-    #define PVR_GPA(fn) \
+    #define PVR_GPA(fn) \\
         g_nextGPA(g_instance, #fn, reinterpret_cast<PFN_xrVoidFunction*>(&fn))
     PVR_GPA(g_xrEnumerateSwapchainFormats);
     PVR_GPA(g_xrCreateSwapchain);
