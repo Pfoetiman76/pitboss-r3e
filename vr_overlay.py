@@ -67,6 +67,9 @@ DEFAULTS = {
     "vr_height_m": 0.35,      # Hoehe ueber dem Blickpunkt (Regler)
     "vr_dist_m": 1.2,         # Abstand vor dem Fahrer (Regler, positiv)
     "vr_opacity": 100,        # globale Deckkraft in Prozent (Regler)
+    "vr_backdrop": 60,        # dunkler Hintergrund hinter jedem Overlay
+                              # in Prozent (0 = aus); hebt die Schrift in
+                              # der VR vom Rennbild ab (0.4.0.3)
     "vr_hidden": [],          # Overlay-Klassen, die nicht gespiegelt werden
 }
 
@@ -103,10 +106,9 @@ def save_config(path, updates: dict) -> dict:
 def canvas_size(screen_w: int, screen_h: int):
     """Leinwandgroesse aus der Bildschirmgroesse.
 
-    1:1-Spiegel: ohne Deckel waere die Leinwand so gross wie der Bildschirm.
-    Sehr grosse Aufloesungen (4K und darueber) werden auf hoechstens
-    2560x1440 verkleinert - die Leinwand bleibt dadurch speicherbar und der
-    Layer schnell. Rueckgabe: (w, h, scale) mit scale <= 1.0.
+    1:1-Spiegel: die Leinwand ist so gross wie der Bildschirm; erst ab
+    4096 Pixel wird gedeckelt (Layer-Obergrenze). Rueckgabe: (w, h, scale)
+    mit scale <= 1.0.
     """
     sw, sh = max(1, int(screen_w)), max(1, int(screen_h))
     s = min(1.0, CAP_W / sw, CAP_H / sh)
