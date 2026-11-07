@@ -18,9 +18,10 @@ PBVR-Protokoll v2 (identisch zum Layer, siehe vr_layer/README.md):
     [7] posX    = Position im LOCAL-Raum
     [8] posY    = Hoehe ueber dem Blickpunkt
     [9] posZ    = Abstand vor dem Fahrer (negativ)
-  Danach: width * height Pixel, je 4 Bytes B, G, R, A (QImage.Format_ARGB32
-  liefert genau dieses Layout - der Monitor-Spiegel komponiert die
-  Overlay-Fenster also per QPainter direkt auf die Leinwand).
+  Danach: width * height Pixel, je 4 Bytes B, G, R, A. Der Monitor-Spiegel
+  komponiert per QPainter auf ein QImage Format_ARGB32_Premultiplied - genau
+  dieses Bytelayout (BGRA, vormultiplizert), wie es OpenXR-Composition-Layer
+  beim Alpha-Blending erwarten (0.4.0.2).
 
 Konzept "Monitor 1:1" (Marcels Ziel, 07.11.2026): Die Leinwand entspricht der
 Bildschirmflaeche, jedes offene Desktop-Overlay wird an seiner Monitor-
@@ -48,7 +49,8 @@ HEADER_SIZE = struct.calcsize(HEADER_FMT)   # 40
 MAPPING_NAME = "Local\\PitBossR3E_VR"       # sitzungsgleich mit dem Spielprozess
 
 MAX_CANVAS = 4096            # Deckel des Layers gegen defekte Header
-CAP_W, CAP_H = 2560, 1440    # Speicherdeckel der Leinwand (Monitor-Spiegel)
+CAP_W, CAP_H = 4096, 4096    # Deckel = Layer-Obergrenze; 4K bleibt 1:1 scharf
+                            # (0.4.0.2: war 2560x1440 - Text wurde unscharf)
 REFRESH_S = 0.05             # max. 20 Spiegel-Bilder pro Sekunde
 
 _PAGE_READWRITE = 0x04
@@ -265,8 +267,9 @@ if __name__ == "__main__":
     w, h, s = canvas_size(1920, 1080)
     check("1:1-Aufloesung bleibt unskaliert", (w, h, s) == (1920, 1080, 1.0), (w, h, s))
     w4, h4, s4 = canvas_size(3840, 2160)
-    check("4K wird gedeckelt (2560x1440)", (w4, h4) == (2560, 1440), (w4, h4, s4))
-    check("Deckel-Skalierung < 1", s4 < 1.0, s4)
+    check("4K bleibt 1:1 (Schärfe, 0.4.0.2)", (w4, h4, s4) == (3840, 2160, 1.0), (w4, h4, s4))
+    w5, h5, s5 = canvas_size(5120, 2880)
+    check("5K wird auf 4096 gedeckelt", (w5, h5) == (4096, 2304) and 0.0 < s5 < 1.0, (w5, h5, s5))
 
     cfg = dict(DEFAULTS)
     qw, qh, px, py, pz = pose_from_config(cfg, 1920, 1080)
