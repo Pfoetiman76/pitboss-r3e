@@ -8391,7 +8391,20 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         else:
             self._vr_idle_pub = False
         prev_last = getattr(b, "_last", 0.0)  # 0.4.0.4: fuer die Altersangabe
-        published = b.publish_slots(slots, now)
+        # 0.4.2.0-Fix: Auch Ausnahmen abfangen (nicht nur False-Rueckgabe).
+        # 0.4.1.1 starb der Spiegel-Tick hier STILL bei unabsicherten
+        # Roh-Daten (constBits ohne bytes()) - die VR blieb leer, ohne dass
+        # das Log etwas zeigte. Der Fehler muss sichtbar werden.
+        try:
+            published = b.publish_slots(slots, now)
+        except Exception as e:
+            published = False
+            if not getattr(self, "_vr_pub_warned", False):
+                self._vr_pub_warned = True
+                try:
+                    self.log.append(f"VR-WARNUNG: Spiegelbild konnte nicht geschrieben werden ({type(e).__name__}: {e}) - die VR bleibt leer. Bitte im Log melden.")
+                except Exception:
+                    pass
         b._pub_ok = published  # 0.4.0.5: fuer die Diagnose-Anzeige
         if debug:
             try:
