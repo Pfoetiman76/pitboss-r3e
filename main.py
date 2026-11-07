@@ -33,7 +33,7 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.0.10 Beta"
+APP_VERSION = "0.4.1.0 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -407,11 +407,13 @@ HOTKEY_ACTIONS = [
     ("live_coach", "Live-Coach"),
     ("brake_coach", "Kurven-Coach"),
     ("corner_overlay", "Kurven-Namen-Overlay"),
+    ("vr_arrange", "VR: Overlays anordnen"),
 ]
 DEFAULT_HOTKEYS = {
     "tire_overlay": "F6", "auto_bestlap": "F7", "record": "F8", "snapshot": "F9",
     "overlay": "F10", "live_coach": "F11", "brake_coach": "F12",
     "corner_overlay": "F5",
+    "vr_arrange": "F4",
 }
 HOTKEY_ACTION_KEYS = [a for a, _label in HOTKEY_ACTIONS]
 SUPPORTED_HOTKEY_KEYS = [f"F{i}" for i in range(1, 25)] + [str(d) for d in range(10)]
@@ -5659,6 +5661,13 @@ class Main(QMainWindow):
         self.act_vr_debug.setCheckable(True)
         self.act_vr_debug.setChecked(bool(vr_overlay.load_config(VR_CONFIG_PATH).get("vr_debug", False)))
         self.act_vr_debug.toggled.connect(self.set_vr_debug)
+        # 0.4.1.0: Anordnen-Modus - Overlays blind per Hotkey (Standard F4,
+        # frei belegbar) in der VR verschieben, wenn der Desktop vom Spiel
+        # ueberdeckt ist. Auswahl-Markierung in Tuerkis direkt auf der Tafel.
+        self.act_vr_arrange = _ov.addAction("VR: Overlays anordnen")
+        self.act_vr_arrange.setCheckable(True)
+        self.act_vr_arrange.setChecked(False)
+        self.act_vr_arrange.toggled.connect(self.toggle_vr_arrange)
         _ov_toggle("Bremstemperaturen (inkl. Verschleiß-Schätzung)", self.toggle_brake_overlay, "brake_overlay_window")
         _ov_toggle("Kraftstoff", self.toggle_fuel_overlay, "fuel_overlay_window")
         _ov_toggle("Kurven-Namen", self.toggle_corner_name_overlay, "corner_name_overlay_window")  # 0.2.41: ins Overlays-Menue verschoben (war unter Mehr)
@@ -7825,6 +7834,86 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         except Exception:
             pass
 
+    # 0.4.1.0: Anordnen-Modus - Overlays blind (ohne Monitor) per Tastendruck
+    # in der VR verschieben. Waehrend der Fahrt ueberdeckt das Spiel bzw. der
+    # Virtual-Desktop-Spiegel den Desktop; die Overlay-Fenster sind am Monitor
+    # dann nicht zu greifen. Der Modus markiert das ausgewaehlte Overlay in
+    # der VR mit einem Tuerkis-Rahmen; Pfeiltasten verschieben es (Shift =
+    # Feinschritt), Bild auf/ab aendert die Groesse, Leertaste waehlt das
+    # naechste Overlay, der Anordnen-Hotkey (Standard F4) beendet den Modus.
+
+    def vr_arrange_targets(self):
+        out = []
+        for w in self.all_overlay_windows():
+            try:
+                if w.isVisible() and w.frameGeometry().width() > 0:
+                    out.append(w)
+            except Exception:
+                pass
+        return out
+
+    def vr_arrange_selected(self):
+        if not getattr(self, "_vr_arrange", False):
+            return None
+        ws = self.vr_arrange_targets()
+        if not ws:
+            return None
+        idx = int(getattr(self, "_vr_arrange_idx", 0)) % len(ws)
+        return ws[idx]
+
+    def vr_arrange_label(self, w):
+        for attr, (label, _slot) in (getattr(self, "_ov_toggle_slots", {}) or {}).items():
+            if getattr(self, attr, None) is w:
+                return label
+        return type(w).__name__
+
+    def vr_arrange_move(self, dx, dy):
+        w = self.vr_arrange_selected()
+        if w is None:
+            return
+        try:
+            scr = QApplication.primaryScreen().availableGeometry()
+            nx = max(scr.left(), min(int(w.x() + dx), scr.right() - w.width()))
+            ny = max(scr.top(), min(int(w.y() + dy), scr.bottom() - w.height()))
+            w.move(nx, ny)
+        except Exception:
+            pass
+
+    def vr_arrange_scale(self, d):
+        w = self.vr_arrange_selected()
+        if w is None or not hasattr(w, "set_ui_scale"):
+            return
+        try:
+            w.set_ui_scale(max(0.5, min(3.0, float(getattr(w, "ov_scale", 1.0)) + d)))
+        except Exception:
+            pass
+
+    def vr_arrange_next(self):
+        ws = self.vr_arrange_targets()
+        if not ws:
+            return
+        self._vr_arrange_idx = (int(getattr(self, "_vr_arrange_idx", 0)) + 1) % len(ws)
+
+    def toggle_vr_arrange(self, on=None):
+        if on is None:
+            on = not bool(getattr(self, "_vr_arrange", False))
+        on = bool(on)
+        self._vr_arrange = on
+        self._vr_arrange_idx = 0
+        act = getattr(self, "act_vr_arrange", None)
+        if act is not None and bool(act.isChecked()) != on:
+            try:
+                act.blockSignals(True); act.setChecked(on); act.blockSignals(False)
+            except Exception:
+                pass
+        try:
+            if on:
+                self.log.append("VR-Anordnen aktiv: Pfeiltasten = verschieben (Shift = fein), Bild auf/ab = Groesse, Leertaste = naechstes Overlay, " + str(self.hotkey_config.get("vr_arrange", "F4")) + " = Modus aus.")
+            else:
+                self.log.append("VR-Anordnen aus.")
+        except Exception:
+            pass
+
     def open_overlay_manager(self):  # 0.4.0.7
         """Dauerhaftes Verwaltungsfenster fuer alle Overlays. Das Overlays-
         Menue ist ein Popup und schliesst sich, sobald ein Klick ein neues
@@ -7861,6 +7950,49 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
 
         for attr, (label, slot) in (getattr(self, "_ov_toggle_slots", {}) or {}).items():
             _mk(label, slot, self._ov_toggle_acts.get(attr))
+        # 0.4.1.0: Position & Groesse je Overlay - am Monitor bedienbar, auch
+        # wenn das Spiel den Desktop ueberdeckt; wirkt sofort in der VR.
+        pos_sep = QLabel("Position & Größe (wirkt sofort in der VR)")
+        pos_sep.setStyleSheet("color:#888;font-weight:bold;")
+        lay.addWidget(pos_sep)
+
+        def _mgr_mv(a, dx, dy):
+            w = getattr(self, a, None)
+            if w is None or not w.isVisible():
+                return
+            try:
+                scr = QApplication.primaryScreen().availableGeometry()
+                nx = max(scr.left(), min(int(w.x() + dx), scr.right() - w.width()))
+                ny = max(scr.top(), min(int(w.y() + dy), scr.bottom() - w.height()))
+                w.move(nx, ny)
+            except Exception:
+                pass
+
+        def _mgr_sc(a, d):
+            w = getattr(self, a, None)
+            if w is None or not w.isVisible() or not hasattr(w, "set_ui_scale"):
+                return
+            try:
+                w.set_ui_scale(max(0.5, min(3.0, float(getattr(w, "ov_scale", 1.0)) + d)))
+            except Exception:
+                pass
+
+        for attr, (label, _slot) in (getattr(self, "_ov_toggle_slots", {}) or {}).items():
+            row = QHBoxLayout()
+            row.addWidget(QLabel(label))
+            row.addStretch(1)
+            for txt, slot in (("◀", lambda a=attr: _mgr_mv(a, -32, 0)),
+                              ("▶", lambda a=attr: _mgr_mv(a, 32, 0)),
+                              ("▲", lambda a=attr: _mgr_mv(a, 0, -32)),
+                              ("▼", lambda a=attr: _mgr_mv(a, 0, 32)),
+                              ("−", lambda a=attr: _mgr_sc(a, -0.1)),
+                              ("+", lambda a=attr: _mgr_sc(a, 0.1))):
+                btn = QPushButton(txt)
+                btn.setFixedWidth(34)
+                btn.setToolTip("Nur bei offenem Overlay wirksam")
+                btn.clicked.connect(slot)
+                row.addWidget(btn)
+            lay.addLayout(row)
         sep = QLabel("VR-Spiegel")
         sep.setStyleSheet("color:#888;font-weight:bold;")
         lay.addWidget(sep)
@@ -7868,6 +8000,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             ("VR-Overlay (Monitor 1:1)", getattr(self, "act_vr_overlay", None), self.toggle_vr_overlay),
             ("VR: Leinwand-Rahmen zeigen", getattr(self, "act_vr_frame", None), self.set_vr_frame_visible),
             ("VR: Diagnose anzeigen", getattr(self, "act_vr_debug", None), self.set_vr_debug),
+            ("VR: Overlays anordnen", getattr(self, "act_vr_arrange", None), self.toggle_vr_arrange),
         ):
             _mk(label, slot, act)
         bb = QDialogButtonBox(QDialogButtonBox.Close)
@@ -8033,6 +8166,23 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 drawn += 1
             except Exception:
                 continue
+        if getattr(self, "_vr_arrange", False):  # 0.4.1.0: Auswahl-Markierung
+            sel = self.vr_arrange_selected()
+            if sel is not None:
+                try:
+                    g = sel.frameGeometry()
+                    p.setOpacity(1.0)
+                    p.setBrush(Qt.NoBrush)
+                    p.setPen(QPen(QColor(0, 229, 255, 240), 5))
+                    p.drawRect(int(round((g.x() - ox) * s * z)),
+                               int(round((g.y() - oy) * s * z)),
+                               max(1, int(round(g.width() * s * z))),
+                               max(1, int(round(g.height() * s * z))))
+                    p.setPen(QColor(0, 229, 255, 240))
+                    p.drawText(24, b.h - 24, "Anordnen: " + self.vr_arrange_label(sel)
+                               + "  (Leertaste = naechstes, Pfeile = verschieben, Bild auf/ab = Groesse)")
+                except Exception:
+                    pass
         if show_frame:
             p.setOpacity(1.0)
             p.setPen(QPen(QColor(208, 208, 208, 170), 3, Qt.DashLine))
@@ -8696,6 +8846,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             "live_coach": self.toggle_live_coach_hotkey,
             "brake_coach": self.toggle_brake_coach_hotkey,
             "corner_overlay": self.toggle_corner_name_overlay,
+            "vr_arrange": self.toggle_vr_arrange,
         }
         for action, key in self.hotkey_config.items():
             vk = hotkey_vk(key)
@@ -8708,6 +8859,24 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 if handler is not None:
                     handler()
             self.global_hotkey_state[key] = down
+        # 0.4.1.0: Tasten des Anordnen-Modus - nur solange der Modus aktiv
+        # ist (Pfeile, Bild auf/ab, Leertaste; Shift = Feinschritt).
+        if getattr(self, "_vr_arrange", False):
+            step = 8 if self._vk_down(0x10) else 32  # VK_SHIFT
+            for key, vk, handler in (
+                ("arr_left", 0x25, lambda: self.vr_arrange_move(-step, 0)),
+                ("arr_right", 0x27, lambda: self.vr_arrange_move(step, 0)),
+                ("arr_up", 0x26, lambda: self.vr_arrange_move(0, -step)),
+                ("arr_down", 0x28, lambda: self.vr_arrange_move(0, step)),
+                ("arr_grow", 0x21, lambda: self.vr_arrange_scale(0.1)),
+                ("arr_shrink", 0x22, lambda: self.vr_arrange_scale(-0.1)),
+                ("arr_next", 0x20, self.vr_arrange_next),
+            ):
+                down = self._vk_down(vk)
+                was_down = self.global_hotkey_state.get(key, False)
+                if down and not was_down:
+                    handler()
+                self.global_hotkey_state[key] = down
 
     def open_beta_feedback(self):
         """0.2.33: Beta-Tester-Formular fuer Bugs und Aenderungswuensche.
