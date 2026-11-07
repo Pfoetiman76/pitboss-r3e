@@ -8,11 +8,18 @@
 //
 // Architektur:
 //   PitBoss (Python) rendert die Overlay-Inhalte als BGRA-Bild in den
-//   Shared-Memory-Puffer "Local\\PitBossR3E_VR" (Header: magic, version,
+//   Shared-Memory-Puffer "Local\PitBossR3E_VR" (Header: magic, version,
 //   width, height, frame). Der Layer liest diesen Puffer und legt ihn als
 //   Quad-Layer ueber die Szene. Fehlt der Puffer (PitBoss laeuft nicht),
 //   zeigt der Layer ein ruhiges Testmuster - so ist der PoC ohne PitBoss
 //   pruefbar ("Testtafel").
+//
+// Aktivierung: impliziter Layer (Registry, siehe vr_layer/README.md).
+//   Explizite Layer werden nur geladen, wenn die Anwendung sie selbst
+//   anfordert - RaceRoom tut das nicht. Implizite Layer laden dagegen
+//   systemweit, deshalb aktiviert sich dieser Layer NUR im RaceRoom-
+//   Prozess (Zielprozess-Filter unten) und verhaelt sich in allen anderen
+//   OpenXR-Anwendungen vollstaendig passiv.
 //
 // Verhandlung: Loader-Interface v1 (xrCreateApiLayerInstance + nextInfo-
 // Kette), siehe openxr_loader_negotiation.h (mitgeliefert unter third_party).
@@ -37,6 +44,7 @@
 #include <openxr/openxr_loader_negotiation.h>
 
 #include <cstdarg>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <cstdint>
@@ -102,6 +110,24 @@ static PFN_xrAcquireSwapchainImage     g_xrAcquireSwapchainImage;
 static PFN_xrWaitSwapchainImage        g_xrWaitSwapchainImage;
 static PFN_xrReleaseSwapchainImage     g_xrReleaseSwapchainImage;
 static PFN_xrCreateReferenceSpace      g_xrCreateReferenceSpace;
+
+// ---------------------------------------------------------------------------
+// Zielprozess-Filter: Implizite Layer laden systemweit. Der Layer darf nur
+// im RaceRoom-Prozess aktiv werden (RRRE.exe / RaceRoom*.exe); in jedem
+// anderen OpenXR-Prozess bleibt er vollstaendig passiv (kein Hook, keine
+// zusaetzliche Erweiterung, alles wird durchgereicht).
+// ---------------------------------------------------------------------------
+
+static bool g_targetProcess = false;
+
+static bool IsRaceRoomProcess() {
+    char path[MAX_PATH] = {0};
+    if (GetModuleFileNameA(nullptr, path, MAX_PATH) == 0) return false;
+    for (char* p = path; *p; ++p)
+        *p = static_cast<char>(tolower(static_cast<unsigned char>(*p)));
+    return strstr(path, "rrre") != nullptr
+        || strstr(path, "raceroom") != nullptr;
+}
 
 // ---------------------------------------------------------------------------
 // Per-Session Overlay-Zustand
@@ -344,7 +370,8 @@ static XrResult XRAPI_PTR LayerEndFrame(XrSession session,
 extern "C" PVR_EXPORT XrResult XRAPI_PTR LayerGetInstanceProcAddr(
         XrInstance instance, const char* name, PFN_xrVoidFunction* function) {
     if (!name || !function) return XR_ERROR_VALIDATION_FAILURE;
-    if (strcmp(name, "xrEndFrame") == 0) {
+    if (!g_targetProcess) g_targetProcess = IsRaceRoomProcess();
+    if (g_targetProcess && strcmp(name, "xrEndFrame") == 0) {
         *function = reinterpret_cast<PFN_xrVoidFunction>(&LayerEndFrame);
         return XR_SUCCESS;
     }
@@ -366,7 +393,9 @@ extern "C" PVR_EXPORT XrResult XRAPI_CALL xrCreateApiLayerInstance(
         return XR_ERROR_VALIDATION_FAILURE;
     }
 
-    // Unsere Kette: nächste Instanz-Schöpfung und GPA merken,
+    if (!g_targetProcess) g_targetProcess = IsRaceRoomProcess();
+
+    // Unsere Kette: naechste Instanz-Schoepfung und GPA merken,
     // danach eigenen Eintrag aus der nextInfo-Kette herausnehmen.
     PFN_xrCreateApiLayerInstance nextCreate =
         apiLayerInfo->nextInfo->nextCreateApiLayerInstance;
@@ -376,7 +405,8 @@ extern "C" PVR_EXPORT XrResult XRAPI_CALL xrCreateApiLayerInstance(
     nextInfo.nextInfo = apiLayerInfo->nextInfo->next;
     nextInfo.structSize -= sizeof(XrApiLayerNextInfo);
 
-    // XR_KHR_D3D11_enable anfordern, damit wir Swapchain-Images lesen koennen
+    // XR_KHR_D3D11_enable nur im Zielprozess anfordern, damit wir
+    // Swapchain-Images lesen koennen (andere Apps unangetastet lassen).
     XrInstanceCreateInfo ci = *createInfo;
     std::vector<const char*> exts(
         createInfo->enabledExtensionNames,
@@ -384,7 +414,7 @@ extern "C" PVR_EXPORT XrResult XRAPI_CALL xrCreateApiLayerInstance(
     bool hasD3D11 = false;
     for (const char* e : exts)
         if (e && strcmp(e, XR_KHR_D3D11_ENABLE_EXTENSION_NAME) == 0) hasD3D11 = true;
-    if (!hasD3D11) exts.push_back(XR_KHR_D3D11_ENABLE_EXTENSION_NAME);
+    if (!hasD3D11 && g_targetProcess) exts.push_back(XR_KHR_D3D11_ENABLE_EXTENSION_NAME);
     ci.enabledExtensionNames = exts.data();
     ci.enabledExtensionCount = static_cast<uint32_t>(exts.size());
 
@@ -404,10 +434,13 @@ extern "C" PVR_EXPORT XrResult XRAPI_CALL xrCreateApiLayerInstance(
     PVR_GPA(g_xrReleaseSwapchainImage);
     PVR_GPA(g_xrCreateReferenceSpace);
     #undef PVR_GPA
-    g_nextGPA(g_instance, "xrEndFrame",
-              reinterpret_cast<PFN_xrVoidFunction*>(&g_nextEndFrame));
+    if (g_targetProcess) {
+        g_nextGPA(g_instance, "xrEndFrame",
+                  reinterpret_cast<PFN_xrVoidFunction*>(&g_nextEndFrame));
+    }
 
-    Log("Layer-Instanz erstellt (%u Erweiterungen)", ci.enabledExtensionCount);
+    Log("Layer-Instanz erstellt (Zielprozess=%d, %u Erweiterungen)",
+        g_targetProcess ? 1 : 0, ci.enabledExtensionCount);
     return res;
 }
 
