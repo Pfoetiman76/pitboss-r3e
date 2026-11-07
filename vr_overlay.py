@@ -75,6 +75,10 @@ DEFAULTS = {
                               # Leinwand + Spiegel-Fakten im Live-Log
     "vr_zoom": 1.0,           # 0.4.0.9: VR-Lesbarkeit - Overlays auf der
                               # Tafel vergroessern (1.0 = 1:1 wie Monitor)
+    "vr_gain": 100,           # 0.4.0.10: Overlay-Hintergrund-Deckkraft
+                              # in der VR in Prozent (0 = wie Monitor,
+                              # 100 = voll deckend); nur das VR-Bild,
+                              # die Schrift bleibt immer voll deckend
 }
 
 
