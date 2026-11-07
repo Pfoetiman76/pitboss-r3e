@@ -71,6 +71,8 @@ DEFAULTS = {
                               # in Prozent (0 = aus); hebt die Schrift in
                               # der VR vom Rennbild ab (0.4.0.3)
     "vr_hidden": [],          # Overlay-Klassen, die nicht gespiegelt werden
+    "vr_debug": False,        # 0.4.0.4: Diagnose - Magenta-Rahmen auf der
+                              # Leinwand + Spiegel-Fakten im Live-Log
 }
 
 

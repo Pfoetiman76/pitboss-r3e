@@ -131,6 +131,18 @@ def mirror_pose_update():
     assert abs(m.opacity - 0.5) < 1e-9
 
 
+@case
+def debug_default():
+    """0.4.0.4: vr_debug ist Teil der DEFAULTS und standardmaessig aus."""
+    assert vo.DEFAULTS.get("vr_debug") is False
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "vr.json"
+        vo.save_config(p, {"vr_debug": True})
+        assert vo.load_config(p)["vr_debug"] is True
+        # uebrige DEFAULTS bleiben erhalten
+        assert vo.load_config(p)["show_frame"] is True
+
+
 def main():
     failed = 0
     for fn in cases:
