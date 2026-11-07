@@ -22,6 +22,7 @@ jobs:
       # Stderr nativer Befehle als Fehler. Beide Schritte schalten das explizit
       # ab und werten stattdessen den Exit-Code aus.
       - name: CMake konfigurieren (x64)
+        id: configure
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
@@ -30,6 +31,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: DLL bauen (Release)
+        id: build
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
@@ -38,6 +40,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Artefakte pruefen
+        id: check
         shell: pwsh
         run: |
           $dir = "vr_layer\build\Release"
@@ -46,6 +49,7 @@ jobs:
           Get-ChildItem $dir | ForEach-Object { Write-Host ("{0,8:N1} KB  {1}" -f ($_.Length/1KB), $_.Name)
 
       - name: Layer-Artefakte hochladen
+        id: upload
         uses: actions/upload-artifact@v4
         with:
           name: pitboss-vr-layer
@@ -54,9 +58,10 @@ jobs:
             vr_layer/build/Release/pitboss_vr_layer.json
           if-no-files-found: error
 
-      # Diagnose: Bei Fehlschlag die letzten Zeilen der Build-Ausgabe als
-      # Kommentar an Issue #2 posten (die Logs sind sonst nur nach Anmeldung
-      # einsehbar). PoC-Hilfsmittel, wird mit der Integration entfernt.
+      # Diagnose: Bei Fehlschlag Schritt-Ergebnisse und die letzten Zeilen der
+      # Build-Ausgabe als Kommentar an Issue #2 posten (die Logs sind sonst nur
+      # nach Anmeldung einsehbar). PoC-Hilfsmittel, wird mit der Integration
+      # entfernt.
       - name: Fehlerauszug an Issue 2 posten
         if: failure()
         env:
@@ -66,6 +71,7 @@ jobs:
           $bt = [string][char]96
           $fence = $bt + $bt + $bt
           $nl = [string][char]10
+          $outcomes = "Schritt-Ergebnisse: configure=${{ steps.configure.outcome }} build=${{ steps.build.outcome }} check=${{ steps.check.outcome }} upload=${{ steps.upload.outcome }}"
           $parts = @()
           foreach ($f in @("ci.log", "build.log")) {
             if (Test-Path $f) {
@@ -74,5 +80,5 @@ jobs:
             }
           }
           if ($parts.Count -eq 0) { $parts = @("Keine Logdatei gefunden (Fehler vor CMake).") }
-          $body = ("VR-Layer CI fehlgeschlagen auf " + $bt + $bt + $env:GITHUB_SHA.Substring(0,8) + $bt + $bt + $nl + $nl + ($parts -join ($nl + $nl)))
+          $body = ("VR-Layer CI fehlgeschlagen auf " + $bt + $bt + $env:GITHUB_SHA.Substring(0,8) + $bt + $bt + $nl + $nl + $outcomes + $nl + $nl + ($parts -join ($nl + $nl)))
           gh issue comment 2 --body $body
