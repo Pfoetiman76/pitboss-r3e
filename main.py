@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QApplication, QFileDialog, QGroupBox, QGridLayout, QHBoxLayout, QLabel,
     QLineEdit, QMainWindow, QMessageBox, QPushButton, QTableWidget, QComboBox,
     QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget, QTabWidget, QFrame,
-    QCheckBox, QSpinBox, QProgressDialog, QSizeGrip, QDialog, QDialogButtonBox, QScrollArea, QSlider
+    QCheckBox, QSpinBox, QProgressDialog, QSizeGrip, QDialog, QDialogButtonBox, QScrollArea, QSlider, QMenu
 )
 
 import ctypes
@@ -33,9 +33,29 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.0.5 Beta"
+APP_VERSION = "0.4.0.6 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
+
+
+class KeepOpenMenu(QMenu):
+    """0.4.0.6: Menue, das bei Haken-Eintraegen (checkable) offen bleibt,
+    damit man mehrere Overlays hintereinander anwaehlen kann, ohne das
+    Menue nach jedem Klick neu oeffnen zu muessen. Nicht abhakbare
+    Eintraege (Dialoge, Untermenues, Trennlinien) verhalten sich normal
+    und schliessen das Menue wie gewohnt. Escape oder Klick daneben
+    schliesst das Menue jederzeit manuell."""
+
+    def mouseReleaseEvent(self, e):
+        try:
+            a = self.actionAt(e.position().toPoint())
+            if a is not None and a.isCheckable():
+                a.trigger()
+                e.accept()
+                return
+        except Exception:
+            pass
+        super().mouseReleaseEvent(e)
 
 def _default_data_dir():
     """Nutzerdaten (Fahrer-Profil, Reports, Configs, Logs) unter
@@ -5573,7 +5593,11 @@ class Main(QMainWindow):
         self.btn_overlays = QToolButton()
         self.btn_overlays.setText("Overlays  ▾")
         self.btn_overlays.setPopupMode(QToolButton.InstantPopup)
-        _ov = QMenu(self.btn_overlays)
+        _ov = KeepOpenMenu(self.btn_overlays)
+        # 0.4.0.6: Menue bleibt bei Haken-Klicks offen (mehrere Overlays
+        # nacheinander anwaehlen) und laesst sich per Zipfelmuster oben
+        # als festes Fenster "abreissen".
+        _ov.setTearOffEnabled(True)
         # 0.3.2.0: Jeder Overlay-Eintrag bekommt einen Haken, sobald das
         # Overlay offen ist. _sync_overlay_menu_checks() haelt die Haken
         # aktuell - auch nach der automatischen Sitzungs-Wiederherstellung
@@ -7774,6 +7798,13 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         on = bool(on)
         self._vr_save_config(vr_debug=on)
         try:
+            if on:
+                # 0.4.0.6: Das System-Log ist standardmaessig ausgeblendet -
+                # bei aktiver Diagnose automatisch einblenden, sonst sucht
+                # man die VR-Spiegel-Zeilen vergebens.
+                self.log.setVisible(True)
+                if getattr(self, "log_label", None) is not None:
+                    self.log_label.setVisible(True)
             if on:
                 self.log.append("VR-Diagnose aktiv: Magenta-Rahmen auf der Tafel; Spiegel-Fakten alle 5 s im Live-Log. Sichtbar in der VR = PitBoss-Bild kommt an.")
             else:
