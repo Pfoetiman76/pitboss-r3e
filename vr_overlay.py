@@ -51,7 +51,10 @@ MAPPING_NAME = "Local\\PitBossR3E_VR"       # sitzungsgleich mit dem Spielprozes
 MAX_CANVAS = 4096            # Deckel des Layers gegen defekte Header
 CAP_W, CAP_H = 4096, 4096    # Deckel = Layer-Obergrenze; 4K bleibt 1:1 scharf
                             # (0.4.0.2: war 2560x1440 - Text wurde unscharf)
-REFRESH_S = 0.05             # max. 20 Spiegel-Bilder pro Sekunde
+REFRESH_S = 0.1              # 0.4.1.1: max. 10 Spiegel-Bilder pro Sekunde
+                            # (Telemetrie kommt ohnehin mit ~10 Hz; 20 Hz
+                            # verdoppelten nur die ~20-MB-Kopien und
+                            # verursachten Mikroruckler in der VR)
 
 _PAGE_READWRITE = 0x04
 _FILE_MAP_ALL_ACCESS = 0xF001F
@@ -79,6 +82,10 @@ DEFAULTS = {
                               # in der VR in Prozent (0 = wie Monitor,
                               # 100 = voll deckend); nur das VR-Bild,
                               # die Schrift bleibt immer voll deckend
+    "vr_depth": {},           # 0.4.1.1: per-Overlay-Abstand in der VR,
+                              # Map {Overlay-Klassenname: Faktor 0.5-2.0}
+                              # (nah = groesser, fern = kleiner, um die
+                              # Overlay-Mitte skaliert)
 }
 
 
@@ -291,7 +298,7 @@ if __name__ == "__main__":
     m = VRMirror(64, 64, DEFAULTS)
     check("VRMirror: publish ohne start() = False", m.publish(b"x" * (64 * 64 * 4)) is False)
     m._last = 100.0  # Basiszeit fuer den Drossel-Test
-    check("VRMirror: zu frueh erkannt", m.too_soon(100.01) is True and m.too_soon(100.1) is False)
+    check("VRMirror: zu frueh erkannt", m.too_soon(100.01) is True and m.too_soon(100.2) is False)
 
     print("SELTEST", "OK" if ok else "FEHLER")
     sys.exit(0 if ok else 1)
