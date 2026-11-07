@@ -33,7 +33,7 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.0.6 Beta"
+APP_VERSION = "0.4.0.7 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -5603,12 +5603,20 @@ class Main(QMainWindow):
         # aktuell - auch nach der automatischen Sitzungs-Wiederherstellung
         # und bei Hotkey-Toggles.
         self._ov_toggle_acts = {}
+        self._ov_toggle_slots = {}  # 0.4.0.7: fuer das Verwaltungsfenster
 
         def _ov_toggle(label, slot, attr):
             a = _ov.addAction(label, slot)
             a.setCheckable(True)
             self._ov_toggle_acts[attr] = a
+            self._ov_toggle_slots[attr] = (label, slot)  # 0.4.0.7
 
+        # 0.4.0.7: dauerhaftes Verwaltungsfenster - Popup-Menues schliessen
+        # sich, sobald ein Klick ein neues Overlay-Fenster oeffnet
+        # (Fokuswechsel). Dieses Fenster bleibt offen, bis man es selbst
+        # schliesst.
+        _ov.addAction("Alle im Fenster verwalten (bleibt offen) …", self.open_overlay_manager)
+        _ov.addSeparator()
         _ov_toggle("Reifen-Overlay", self.toggle_tire_overlay, "tire_overlay_window")
         _ov_toggle("Pedal-Overlay", self.toggle_pedal_overlay, "pedal_overlay_window")
         _ov_toggle("Monitor-Overlay", self.toggle_overlay, "overlay_window")
@@ -7777,6 +7785,11 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         try:
             if gespeichert != on:
                 self.log.append(f"VR-WARNUNG: Rahmen-Umschalten wurde nicht gespeichert (gespeichert: {gespeichert}, erwartet: {on}).")
+                # 0.4.0.7: Menue-Haken auf den tatsaechlich gespeicherten
+                # Zustand zuruecksetzen, sonst bleibt er scheinbar "an".
+                act = getattr(self, "act_vr_frame", None)
+                if act is not None:
+                    act.blockSignals(True); act.setChecked(gespeichert); act.blockSignals(False)
             self.log.append("VR: Leinwand-Rahmen laut Konfiguration " + ("sichtbar." if gespeichert else "ausgeblendet.") + " Das naechste Spiegel-Bild folgt sofort.")
         except Exception:
             pass
@@ -7811,6 +7824,59 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 self.log.append("VR-Diagnose aus.")
         except Exception:
             pass
+
+    def open_overlay_manager(self):  # 0.4.0.7
+        """Dauerhaftes Verwaltungsfenster fuer alle Overlays. Das Overlays-
+        Menue ist ein Popup und schliesst sich, sobald ein Klick ein neues
+        Overlay-Fenster oeffnet (Fokuswechsel schliesst Popups). Dieses
+        Fenster ist ein normales, nicht-modales Fenster: Es bleibt offen,
+        bis man es selbst schliesst - alle Haken wirken sofort und bleiben
+        mit dem Menue synchron (auch Hotkeys und Menue aendern die Haken
+        hier mit)."""
+        dlg = getattr(self, "_ov_mgr", None)
+        if dlg is not None:
+            try:
+                dlg.show(); dlg.raise_(); dlg.activateWindow()
+                return
+            except Exception:
+                self._ov_mgr = None
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Overlays verwalten")
+        dlg.setModal(False)
+        lay = QVBoxLayout(dlg)
+        hint = QLabel("Haken setzen oder entfernen - dieses Fenster bleibt offen, bis du es selbst schließt. Änderungen wirken sofort (auch in der VR).")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#888;")
+        lay.addWidget(hint)
+
+        def _mk(label, slot, act):
+            cb = QCheckBox(label)
+            if act is not None:
+                cb.setChecked(bool(act.isChecked()))
+                def _from_menu(checked, cb=cb):
+                    cb.blockSignals(True); cb.setChecked(bool(checked)); cb.blockSignals(False)
+                act.toggled.connect(_from_menu)
+            cb.toggled.connect(slot)
+            lay.addWidget(cb)
+
+        for attr, (label, slot) in (getattr(self, "_ov_toggle_slots", {}) or {}).items():
+            _mk(label, slot, self._ov_toggle_acts.get(attr))
+        sep = QLabel("VR-Spiegel")
+        sep.setStyleSheet("color:#888;font-weight:bold;")
+        lay.addWidget(sep)
+        for label, act, slot in (
+            ("VR-Overlay (Monitor 1:1)", getattr(self, "act_vr_overlay", None), self.toggle_vr_overlay),
+            ("VR: Leinwand-Rahmen zeigen", getattr(self, "act_vr_frame", None), self.set_vr_frame_visible),
+            ("VR: Diagnose anzeigen", getattr(self, "act_vr_debug", None), self.set_vr_debug),
+        ):
+            _mk(label, slot, act)
+        bb = QDialogButtonBox(QDialogButtonBox.Close)
+        bb.clicked.connect(lambda _b=None: dlg.close())
+        lay.addWidget(bb)
+        dlg.finished.connect(lambda _r=None: setattr(self, "_ov_mgr", None))
+        self._ov_mgr = dlg
+        dlg.resize(360, 680)
+        dlg.show(); dlg.raise_(); dlg.activateWindow()
 
     def open_vr_settings(self):  # 0.4.0.0
         """Justage-Dialog: VR-Regler fuer Groesse, Hoehe, Abstand und
