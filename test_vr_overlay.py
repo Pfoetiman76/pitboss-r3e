@@ -86,6 +86,7 @@ def config_roundtrip():
         assert cfg["vr_width_m"] == 2.5 and cfg["vr_opacity"] == 80
         assert cfg["vr_hidden"] == ["DeltaBoard"]
         assert cfg["show_frame"] is True  # DEFAULTS bleiben erhalten
+        assert cfg["vr_backdrop"] == vo.DEFAULTS["vr_backdrop"]  # 0.4.0.3
         # verfaelschte Datei: DEFAULTS ueberleben
         p.write_text("{}", encoding="utf-8")
         assert vo.load_config(p)["vr_dist_m"] == vo.DEFAULTS["vr_dist_m"]

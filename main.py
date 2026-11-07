@@ -33,7 +33,7 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.0.2 Beta"
+APP_VERSION = "0.4.0.3 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -5612,9 +5612,12 @@ class Main(QMainWindow):
         # verschieben/skalieren/Deckkraft/zumachen wirkt sofort.
         self.act_vr_overlay = _ov.addAction("VR-Overlay (Monitor 1:1)", self.toggle_vr_overlay)
         self.act_vr_overlay.setCheckable(True)
-        self.act_vr_frame = _ov.addAction("VR: Leinwand-Rahmen zeigen", self.set_vr_frame_visible)
+        self.act_vr_frame = _ov.addAction("VR: Leinwand-Rahmen zeigen")
         self.act_vr_frame.setCheckable(True)
         self.act_vr_frame.setChecked(bool(vr_overlay.load_config(VR_CONFIG_PATH).get("show_frame", True)))
+        # 0.4.0.3: explizite Verbindung - addAction(text, slot) kann das
+        # triggered-Argument verschlucken, dann wirkte der Haken nicht.
+        self.act_vr_frame.toggled.connect(self.set_vr_frame_visible)
         _ov.addAction("VR: Einstellungen …", self.open_vr_settings)
         _ov_toggle("Bremstemperaturen (inkl. Verschleiß-Schätzung)", self.toggle_brake_overlay, "brake_overlay_window")
         _ov_toggle("Kraftstoff", self.toggle_fuel_overlay, "fuel_overlay_window")
@@ -7709,9 +7712,12 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             self.log.append("VR-Overlay gestoppt - im Spiel ist wieder das Testmuster der DLL zu sehen.")
         self._sync_overlay_menu_checks()
 
-    def set_vr_frame_visible(self, on):  # 0.4.0.0
+    def set_vr_frame_visible(self, on=None):  # 0.4.0.3: defensiv
         """Leinwand-Rahmen des VR-Spiegels ein/aus (zeigt, was in der VR
-        sichtbar ist; abschaltbar, damit die Tafel unauffaellig bleibt)."""
+        sichtbar ist; abschaltbar, damit die Tafel unauffaellig bleibt).
+        on=None (z. B. bei fehlendem Signal-Argument): Zustand umkehren."""
+        if on is None:
+            on = not self._vr_show_frame()
         on = bool(on)
         self._vr_save_config(show_frame=on)
         b = getattr(self, "vr_board", None)
@@ -7753,16 +7759,19 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         h_sl, h_lbl, h_fmt = _row("Höhe", -5, 15, round(float(cfg.get("vr_height_m", 0.35)) * 10), lambda v: f"{v/10:.1f} m")
         d_sl, d_lbl, d_fmt = _row("Abstand", 6, 30, round(float(cfg.get("vr_dist_m", 1.2)) * 10), lambda v: f"{v/10:.1f} m")
         o_sl, o_lbl, o_fmt = _row("Deckkraft", 30, 100, int(cfg.get("vr_opacity", 100)), lambda v: f"{v} %")
+        bd_sl, bd_lbl, bd_fmt = _row("Hintergrund", 0, 100, int(cfg.get("vr_backdrop", 60)), lambda v: f"{v} %")
 
         def _changed(_v=None):
             self._vr_save_config(vr_width_m=w_sl.value() / 10.0,
                                  vr_height_m=h_sl.value() / 10.0,
                                  vr_dist_m=d_sl.value() / 10.0,
-                                 vr_opacity=o_sl.value())
+                                 vr_opacity=o_sl.value(),
+                                 vr_backdrop=bd_sl.value())
             w_lbl.setText(w_fmt(w_sl.value()))
             h_lbl.setText(h_fmt(h_sl.value()))
             d_lbl.setText(d_fmt(d_sl.value()))
             o_lbl.setText(o_fmt(o_sl.value()))
+            bd_lbl.setText(bd_fmt(bd_sl.value()))
             b = getattr(self, "vr_board", None)
             if b is not None:
                 b.update_pose(vr_overlay.load_config(VR_CONFIG_PATH))
@@ -7771,8 +7780,9 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         h_sl.valueChanged.connect(_changed)
         d_sl.valueChanged.connect(_changed)
         o_sl.valueChanged.connect(_changed)
+        bd_sl.valueChanged.connect(_changed)
 
-        hint2 = QLabel("Tipp: Jedes Overlay hat im Rechtsklick-Menue einen Haken \"In VR zeigen\".")
+        hint2 = QLabel("Tipp: Jedes Overlay hat im Rechtsklick-Menue einen Haken \"In VR zeigen\".\n\"Hintergrund\" legt einen dunklen Bereich hinter jedes Overlay in der VR (0 = aus).")
         hint2.setStyleSheet("color: #888;")
         lay.addWidget(hint2)
         bb = QDialogButtonBox(QDialogButtonBox.Ok)
@@ -7803,7 +7813,14 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 self.vr_board = None
                 return
             self.vr_board = b = b2
-        hidden = vr_overlay.hidden_classes(vr_overlay.load_config(VR_CONFIG_PATH))
+        cfg = vr_overlay.load_config(VR_CONFIG_PATH)
+        hidden = vr_overlay.hidden_classes(cfg)
+        # 0.4.0.3: Rahmen-Zustand pro Bild aus der Konfiguration nehmen -
+        # so wirkt der Menue-Haken sicher, selbst wenn die Instanz neu
+        # aufgebaut wurde oder das Signal-Argument fehlt.
+        show_frame = bool(cfg.get("show_frame", True))
+        b.show_frame = show_frame
+        backdrop = min(100, max(0, int(cfg.get("vr_backdrop", 60))))
         canvas = QImage(b.w, b.h, QImage.Format_ARGB32_Premultiplied)
         canvas.fill(Qt.transparent)
         p = QPainter(canvas)
@@ -7816,6 +7833,14 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 g = w.frameGeometry()
                 if g.width() <= 0 or g.height() <= 0:
                     continue
+                # 0.4.0.3: dunkler Hintergrund hinter dem Overlay - hebt
+                # die Schrift im Rennbild ab (Regler "Hintergrund", 0 = aus).
+                if backdrop > 0:
+                    p.fillRect(int(round((g.x() - ox) * s)),
+                               int(round((g.y() - oy) * s)),
+                               max(1, int(round(g.width() * s))),
+                               max(1, int(round(g.height() * s))),
+                               QColor(8, 8, 10, int(255 * backdrop / 100)))
                 img = w.grab().toImage()
                 if s != 1.0:
                     img = img.scaled(max(1, int(round(g.width() * s))),
@@ -7825,7 +7850,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                             int(round((g.y() - oy) * s)), img)
             except Exception:
                 continue
-        if getattr(b, "show_frame", True):
+        if show_frame:
             p.setOpacity(1.0)
             p.setPen(QPen(QColor(208, 208, 208, 170), 3, Qt.DashLine))
             p.drawRect(0, 0, b.w - 1, b.h - 1)
