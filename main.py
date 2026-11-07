@@ -33,7 +33,7 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.0.3 Beta"
+APP_VERSION = "0.4.0.4 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -5619,6 +5619,14 @@ class Main(QMainWindow):
         # triggered-Argument verschlucken, dann wirkte der Haken nicht.
         self.act_vr_frame.toggled.connect(self.set_vr_frame_visible)
         _ov.addAction("VR: Einstellungen …", self.open_vr_settings)
+        # 0.4.0.4: Diagnose - zeichnet einen magentafarbenen gestrichelten
+        # Rahmen in die Leinwand (sicht man ihn in der VR, kommt das
+        # PitBoss-Bild an) und schreibt alle 5 s die Spiegel-Fakten ins
+        # Live-Log (Groesse, gespiegelte Overlays, Rahmen, Bild-Zaehler).
+        self.act_vr_debug = _ov.addAction("VR: Diagnose anzeigen")
+        self.act_vr_debug.setCheckable(True)
+        self.act_vr_debug.setChecked(bool(vr_overlay.load_config(VR_CONFIG_PATH).get("vr_debug", False)))
+        self.act_vr_debug.toggled.connect(self.set_vr_debug)
         _ov_toggle("Bremstemperaturen (inkl. Verschleiß-Schätzung)", self.toggle_brake_overlay, "brake_overlay_window")
         _ov_toggle("Kraftstoff", self.toggle_fuel_overlay, "fuel_overlay_window")
         _ov_toggle("Kurven-Namen", self.toggle_corner_name_overlay, "corner_name_overlay_window")  # 0.2.41: ins Overlays-Menue verschoben (war unter Mehr)
@@ -7677,11 +7685,25 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             pass
 
     def _vr_save_config(self, **updates):
-        """0.4.0.0: VR-Overlay-Konfiguration (aktiv/Rahmen/Regler) merken."""
+        """0.4.0.0: VR-Overlay-Konfiguration (aktiv/Rahmen/Regler) merken.
+        0.4.0.4: gibt die neu geladene Konfiguration zurueck und verifiziert
+        jeden Wert - schlug das Speichern fehl, steht eine Warnung im Log
+        (frueher verschluckte save_config Fehler stillschweigend)."""
         try:
-            vr_overlay.save_config(VR_CONFIG_PATH, updates)
+            newcfg = vr_overlay.save_config(VR_CONFIG_PATH, updates)
+        except Exception as e:
+            try:
+                self.log.append(f"VR-WARNUNG: Konfiguration nicht speicherbar: {e}")
+            except Exception:
+                pass
+            return None
+        try:
+            for k, v in updates.items():
+                if newcfg.get(k) != v:
+                    self.log.append(f"VR-WARNUNG: '{k}' konnte nicht gespeichert werden (gespeichert: {newcfg.get(k)!r}, erwartet: {v!r}).")
         except Exception:
             pass
+        return newcfg
 
     def _vr_show_frame(self):
         try:
@@ -7720,11 +7742,42 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             on = not self._vr_show_frame()
         on = bool(on)
         self._vr_save_config(show_frame=on)
+        try:
+            gespeichert = bool(vr_overlay.load_config(VR_CONFIG_PATH).get("show_frame", True))
+        except Exception:
+            gespeichert = on
         b = getattr(self, "vr_board", None)
         if b is not None:
-            b.show_frame = on
+            b.show_frame = gespeichert
+            b._last = 0.0  # 0.4.0.4: sofort ein frisches Bild erzwingen
+        try:
+            if gespeichert != on:
+                self.log.append(f"VR-WARNUNG: Rahmen-Umschalten wurde nicht gespeichert (gespeichert: {gespeichert}, erwartet: {on}).")
+            self.log.append("VR: Leinwand-Rahmen laut Konfiguration " + ("sichtbar." if gespeichert else "ausgeblendet.") + " Das naechste Spiegel-Bild folgt sofort.")
+        except Exception:
+            pass
         try:
             self.status.setText("VR: Leinwand-Rahmen " + ("sichtbar." if on else "ausgeblendet."))
+        except Exception:
+            pass
+
+    def set_vr_debug(self, on=None):  # 0.4.0.4
+        """VR-Diagnose an/aus: Magenta-Rahmen auf der VR-Tafel (sicht man ihn
+        in der Brille, kommt das PitBoss-Bild an - sieht man ihn nicht,
+        zeigt die Brille etwas anderes, z. B. das Testmuster der DLL) plus
+        alle 5 s eine Zeile mit den Spiegel-Fakten im Live-Log."""
+        if on is None:
+            try:
+                on = not bool(vr_overlay.load_config(VR_CONFIG_PATH).get("vr_debug", False))
+            except Exception:
+                on = True
+        on = bool(on)
+        self._vr_save_config(vr_debug=on)
+        try:
+            if on:
+                self.log.append("VR-Diagnose aktiv: Magenta-Rahmen auf der Tafel; Spiegel-Fakten alle 5 s im Live-Log. Sichtbar in der VR = PitBoss-Bild kommt an.")
+            else:
+                self.log.append("VR-Diagnose aus.")
         except Exception:
             pass
 
@@ -7775,6 +7828,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             b = getattr(self, "vr_board", None)
             if b is not None:
                 b.update_pose(vr_overlay.load_config(VR_CONFIG_PATH))
+                b._last = 0.0  # 0.4.0.4: sofort ein frisches Bild erzwingen
 
         w_sl.valueChanged.connect(_changed)
         h_sl.valueChanged.connect(_changed)
@@ -7811,6 +7865,8 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             b2 = vr_overlay.VRMirror(cw, ch, vr_overlay.load_config(VR_CONFIG_PATH))
             if not b2.start():
                 self.vr_board = None
+                # 0.4.0.4: bisher starb der Spiegel hier stillschweigend.
+                self.log.append("VR-WARNUNG: Leinwand-Neuaufbau nach Aufloesungswechsel fehlgeschlagen - VR-Spiegel gestoppt.")
                 return
             self.vr_board = b = b2
         cfg = vr_overlay.load_config(VR_CONFIG_PATH)
@@ -7821,17 +7877,21 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         show_frame = bool(cfg.get("show_frame", True))
         b.show_frame = show_frame
         backdrop = min(100, max(0, int(cfg.get("vr_backdrop", 60))))
+        debug = bool(cfg.get("vr_debug", False))  # 0.4.0.4
         canvas = QImage(b.w, b.h, QImage.Format_ARGB32_Premultiplied)
         canvas.fill(Qt.transparent)
         p = QPainter(canvas)
         p.setOpacity(getattr(b, "opacity", 1.0))
         ox, oy = scr.x(), scr.y()
+        drawn, skipped = 0, 0  # 0.4.0.4: Diagnose-Zaehler
         for w in self.all_overlay_windows():
             try:
                 if not w.isVisible() or type(w).__name__ in hidden:
+                    skipped += 1
                     continue
                 g = w.frameGeometry()
                 if g.width() <= 0 or g.height() <= 0:
+                    skipped += 1
                     continue
                 # 0.4.0.3: dunkler Hintergrund hinter dem Overlay - hebt
                 # die Schrift im Rennbild ab (Regler "Hintergrund", 0 = aus).
@@ -7848,14 +7908,37 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                                      Qt.IgnoreAspectRatio, Qt.FastTransformation)
                 p.drawImage(int(round((g.x() - ox) * s)),
                             int(round((g.y() - oy) * s)), img)
+                drawn += 1
             except Exception:
                 continue
         if show_frame:
             p.setOpacity(1.0)
             p.setPen(QPen(QColor(208, 208, 208, 170), 3, Qt.DashLine))
             p.drawRect(0, 0, b.w - 1, b.h - 1)
+        if debug:  # 0.4.0.4: eindeutiger Magenta-Marker - sieht man ihn in
+            # der VR, kommt definitiv das PitBoss-Bild an (nicht das DLL-
+            # Testmuster, das hat einen soliden grauen Rahmen).
+            p.setOpacity(1.0)
+            p.setPen(QPen(QColor(255, 0, 255, 220), 6, Qt.DashLine))
+            p.drawRect(8, 8, b.w - 17, b.h - 17)
         p.end()
-        b.publish(bytes(canvas.constBits()), now)
+        prev_last = getattr(b, "_last", now)  # 0.4.0.4: fuer die Altersangabe
+        published = b.publish(bytes(canvas.constBits()), now)
+        if debug:
+            try:
+                if (now - getattr(b, "_dbg_last", 0.0)) >= 5.0:
+                    b._dbg_last = now
+                    self.log.append(
+                        "VR-Spiegel: {w}x{h}, {d} Overlay(s) gespiegelt, {sk} uebergangen, "
+                        "Rahmen {fr}, Hintergrund {bd} %, Bild #{f}, letztes Bild vor {age:.1f} s, "
+                        "Schreiben {pub}.".format(
+                            w=b.w, h=b.h, d=drawn, sk=skipped,
+                            fr="an" if show_frame else "AUS", bd=backdrop,
+                            f=getattr(b, "_frame", 0),
+                            age=(now - prev_last),
+                            pub="OK" if published else "FEHLER"))
+            except Exception:
+                pass
 
     def all_overlay_windows(self):
         """0.4.9.1: alle Overlay-Fenster, die es aktuell gibt."""
