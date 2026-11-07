@@ -33,7 +33,7 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.0.7 Beta"
+APP_VERSION = "0.4.0.8 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -8054,6 +8054,13 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                             f=getattr(b, "_frame", 0),
                             age=(now - prev_last),
                             pub="OK" if published else "FEHLER"))
+                    # 0.4.0.8: Leinwand als PNG speichern - zeigt am Monitor,
+                    # was wirklich in der VR ankommt (Dokumente\PitBoss R3E).
+                    try:
+                        EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+                        canvas.save(str(EXPORT_DIR / "vr_debug_canvas.png"), "PNG")
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
