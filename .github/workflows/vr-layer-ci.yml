@@ -3,10 +3,13 @@ name: VR-Layer CI
 on:
   push:
     branches: ['**']
-    paths: ['vr_layer/**']
+    paths: ['vr_layer/**', '.github/workflows/vr-layer-ci.yml']
   pull_request:
-    paths: ['vr_layer/**']
+    paths: ['vr_layer/**', '.github/workflows/vr-layer-ci.yml']
   workflow_dispatch: {}
+
+permissions:
+  issues: write
 
 jobs:
   build-layer:
@@ -16,10 +19,16 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: CMake konfigurieren (x64)
-        run: cmake -S vr_layer -B vr_layer/build -A x64
+        shell: pwsh
+        run: |
+          cmake -S vr_layer -B vr_layer/build -A x64 2>&1 | Tee-Object -FilePath ci.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: DLL bauen (Release)
-        run: cmake --build vr_layer/build --config Release
+        shell: pwsh
+        run: |
+          cmake --build vr_layer/build --config Release 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Artefakte pruefen
         shell: pwsh
@@ -27,7 +36,7 @@ jobs:
           $dir = "vr_layer\build\Release"
           if (-not (Test-Path "$dir\XR_APILAYER_PitBossR3E_VR.dll")) { throw "DLL fehlt im Build" }
           if (-not (Test-Path "$dir\pitboss_vr_layer.json")) { throw "Manifest fehlt im Build" }
-          Get-ChildItem $dir | ForEach-Object { Write-Host ("{0,8:N1} KB  {1}" -f ($_.Length/1KB), $_.Name) }
+          Get-ChildItem $dir | ForEach-Object { Write-Host ("{0,8:N1} KB  {1}" -f ($_.Length/1KB), $_.Name)
 
       - name: Layer-Artefakte hochladen
         uses: actions/upload-artifact@v4
@@ -37,3 +46,23 @@ jobs:
             vr_layer/build/Release/XR_APILAYER_PitBossR3E_VR.dll
             vr_layer/build/Release/pitboss_vr_layer.json
           if-no-files-found: error
+
+      # Diagnose: Bei Fehlschlag die letzten Zeilen der Build-Ausgabe als
+      # Kommentar an Issue #2 posten (die Logs sind sonst nur nach Anmeldung
+      # einsehbar). PoC-Hilfsmittel, wird mit der Integration entfernt.
+      - name: Fehlerauszug an Issue 2 posten
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $parts = @()
+          foreach ($f in @("ci.log", "build.log")) {
+            if (Test-Path $f) {
+              $tail = (Get-Content $f | Select-Object -Last 60) -join "`n"
+              $parts += "### $f" + "`n`n```" + "`n" + $tail + "`n" + "```"
+            }
+          }
+          if ($parts.Count -eq 0) { $parts = @("Keine Logdatei gefunden (Fehler vor CMake).") }
+          $body = "VR-Layer CI fehlgeschlagen auf ``" + $env:GITHUB_SHA.Substring(0,8) + "``" + "`n`n" + ($parts -join "`n`n")
+          gh issue comment 2 --body $body
