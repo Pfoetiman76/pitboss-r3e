@@ -352,7 +352,14 @@ class VRMirror:
         msg = (msg[:8]
                + struct.pack("<I", self._frame)
                + msg[12:])
-        ctypes.memmove(self._view, msg, len(msg))
+        # 0.4.2.0-Fix: Schreibfehler NEVER als Ausnahme durchlassen - ein
+        # unabsicherter Spiegel-Tick (0.4.1.1: constBits ohne bytes()) hatte
+        # zur Folge, dass NIE ein Bild geschrieben wurde und die VR leer
+        # blieb, ohne dass es im Log sichtbar war.
+        try:
+            ctypes.memmove(self._view, msg, len(msg))
+        except Exception:
+            return False
         if now is not None:
             self._last = now
         return True
