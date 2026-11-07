@@ -33,7 +33,7 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.0.9 Beta"
+APP_VERSION = "0.4.0.10 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -7911,6 +7911,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         o_sl, o_lbl, o_fmt = _row("Deckkraft", 30, 100, int(cfg.get("vr_opacity", 100)), lambda v: f"{v} %")
         bd_sl, bd_lbl, bd_fmt = _row("Hintergrund", 0, 100, int(cfg.get("vr_backdrop", 60)), lambda v: f"{v} %")
         z_sl, z_lbl, z_fmt = _row("Zoom (VR-Lesbarkeit)", 100, 400, round(float(cfg.get("vr_zoom", 1.0)) * 100), lambda v: f"{v} %")
+        g_sl, g_lbl, g_fmt = _row("Overlay-Deckkraft (VR)", 0, 100, int(cfg.get("vr_gain", 100)), lambda v: f"{v} %")
 
         def _changed(_v=None):
             self._vr_save_config(vr_width_m=w_sl.value() / 10.0,
@@ -7918,13 +7919,15 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                                  vr_dist_m=d_sl.value() / 10.0,
                                  vr_opacity=o_sl.value(),
                                  vr_backdrop=bd_sl.value(),
-                                 vr_zoom=z_sl.value() / 100.0)
+                                 vr_zoom=z_sl.value() / 100.0,
+                                 vr_gain=g_sl.value())
             w_lbl.setText(w_fmt(w_sl.value()))
             h_lbl.setText(h_fmt(h_sl.value()))
             d_lbl.setText(d_fmt(d_sl.value()))
             o_lbl.setText(o_fmt(o_sl.value()))
             bd_lbl.setText(bd_fmt(bd_sl.value()))
             z_lbl.setText(z_fmt(z_sl.value()))
+            g_lbl.setText(g_fmt(g_sl.value()))
             b = getattr(self, "vr_board", None)
             if b is not None:
                 b.update_pose(vr_overlay.load_config(VR_CONFIG_PATH))
@@ -7936,8 +7939,9 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         o_sl.valueChanged.connect(_changed)
         bd_sl.valueChanged.connect(_changed)
         z_sl.valueChanged.connect(_changed)
+        g_sl.valueChanged.connect(_changed)
 
-        hint2 = QLabel("Tipp: Jedes Overlay hat im Rechtsklick-Menue einen Haken \"In VR zeigen\".\n\"Hintergrund\" legt einen dunklen Bereich hinter jedes Overlay in der VR (0 = aus).")
+        hint2 = QLabel("Tipp: Jedes Overlay hat im Rechtsklick-Menue einen Haken \"In VR zeigen\".\n\"Hintergrund\" legt einen dunklen Bereich hinter jedes Overlay in der VR (0 = aus).\n\"Overlay-Deckkraft\" macht die Overlay-Hintergruende NUR in der VR deckender (100 % = voll deckend) -\nam Monitor aendert sich nichts.")
         hint2.setStyleSheet("color: #888;")
         lay.addWidget(hint2)
         bb = QDialogButtonBox(QDialogButtonBox.Ok)
@@ -7979,6 +7983,12 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         b.show_frame = show_frame
         backdrop = min(100, max(0, int(cfg.get("vr_backdrop", 60))))
         z = max(1.0, float(cfg.get("vr_zoom", 1.0)))  # 0.4.0.9: VR-Zoom
+        # 0.4.0.10: Overlay-Deckkraft in der VR. Die Desktop-Overlays blenden
+        # ihren Hintergrund ueber ov_opacity ab (Standard 0 = durchscheinend);
+        # in der VR war das schlicht zu transparent. Der Grab rendert mit
+        # angehobener Deckkraft - nur fuer das VR-Bild, der Monitor bleibt
+        # unveraendert, grab() zeichnet abseits des Bildschirms.
+        gain = min(100, max(0, int(cfg.get("vr_gain", 100))))
         debug = bool(cfg.get("vr_debug", False))  # 0.4.0.4
         canvas = QImage(b.w, b.h, QImage.Format_ARGB32_Premultiplied)
         canvas.fill(Qt.transparent)
@@ -8003,7 +8013,17 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                                max(1, int(round(g.width() * s * z))),
                                max(1, int(round(g.height() * s * z))),
                                QColor(8, 8, 10, int(255 * backdrop / 100)))
+                # 0.4.0.10: Hintergrund-Alpha nur fuer den VR-Grab anheben
+                # (ov_opacity fliesst in paintEvent in _bg()/_panel() ein,
+                # die Schrift bleibt immer voll deckend). Originalwert danach
+                # sofort wiederherstellen.
+                try:
+                    _ovbase = max(0.0, min(1.0, float(getattr(w, "ov_opacity", 0.0))))
+                except Exception:
+                    _ovbase = 0.0
+                w.ov_opacity = max(0.0, min(1.0, _ovbase + (1.0 - _ovbase) * (gain / 100.0)))
                 img = w.grab().toImage()
+                w.ov_opacity = _ovbase
                 if s != 1.0 or z != 1.0:  # 0.4.0.9: Zoom = VR-Lesbarkeit
                     img = img.scaled(max(1, int(round(g.width() * s * z))),
                                      max(1, int(round(g.height() * s * z))),
@@ -8030,8 +8050,8 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             dfont.setPixelSize(max(18, b.h // 45))
             p.setFont(dfont)
             fm = QFontMetricsF(dfont)
-            zeile1 = "PitBoss {v}: Rahmen {fr}, Hintergrund {bd} %".format(
-                v=APP_VERSION, fr=("AN" if show_frame else "AUS"), bd=backdrop)
+            zeile1 = "PitBoss {v}: Rahmen {fr}, Hintergrund {bd} %, Overlay-Deckkraft {g} %".format(
+                v=APP_VERSION, fr=("AN" if show_frame else "AUS"), bd=backdrop, g=gain)
             zeile2 = "{d} Overlay(s) gespiegelt, Zoom {z}x, Bild #{f}, {w}x{h}, Schreiben {pub}".format(
                 d=drawn, z=("%.1f" % z), f=getattr(b, "_frame", 0), w=b.w, h=b.h,
                 pub=("OK" if getattr(b, "_pub_ok", True) else "FEHLER"))
