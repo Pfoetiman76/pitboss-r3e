@@ -29,41 +29,53 @@ jobs:
       - name: DLL bauen (Release)
         run: cmake --build vr_layer/build --config Release
 
+      - name: Pruefprogramm bauen (pitboss_vr_check.exe)
+        run: |
+          cmake -S vr_layer/check -B vr_layer/check/build -A x64
+          cmake --build vr_layer/check/build --config Release
+
       - name: Artefakte pruefen
         shell: pwsh
         run: |
           $dir = "vr_layer\build\Release"
           if (-not (Test-Path "$dir\XR_APILAYER_PitBossR3E_VR.dll")) { throw "DLL fehlt im Build" }
           if (-not (Test-Path "$dir\pitboss_vr_layer.json")) { throw "Manifest fehlt im Build" }
+          $chk = "vr_layer\check\build\Release\pitboss_vr_check.exe"
+          if (-not (Test-Path $chk)) { throw "Pruefprogramm fehlt im Build" }
+          Copy-Item $chk "$dir\pitboss_vr_check.exe" -Force
           Get-ChildItem $dir | ForEach-Object { Write-Host ("{0,8:N1} KB  {1}" -f ($_.Length/1KB), $_.Name) }
 
       - name: LIESMICH fuer den Download beilegen
         shell: pwsh
         run: |
           @'
-          PitBoss R3E - VR-Layer PoC (Testtafel)
-          ====================================
+          PitBoss R3E - VR-Layer PoC (Testtafel + Pruefprogramm)
+          =======================================================
           Vorbereitung:
-          1. Beide Dateien (XR_APILAYER_PitBossR3E_VR.dll + pitboss_vr_layer.json)
-             in einen Ordner legen, z.B. S:\PitBossVR
-          2. Layer registrieren (Eingabeaufforderung, EINE Zeile; Pfad bei
+          1. Alle drei Dateien (XR_APILAYER_PitBossR3E_VR.dll,
+             pitboss_vr_layer.json, pitboss_vr_check.exe) in einen Ordner
+             legen, z.B. S:\PitBossVR
+          2. WICHTIG: Browser-Downloads sind zunaechst gesperrt. Beide Dateien
+             freigeben: Rechtsklick auf die Datei -> Eigenschaften ->
+             Reiter Allgemein -> Haken "Zulassen" setzen -> OK.
+             (Oder in PowerShell: Unblock-File S:\PitBossVR\*.dll;
+              Unblock-File S:\PitBossVR\*.json)
+          3. Layer registrieren (Eingabeaufforderung, EINE Zeile; Pfad bei
              anderem Ordner anpassen):
                reg add "HKCU\SOFTWARE\Khronos\OpenXR\1\ApiLayers\Implicit" /v "S:\PitBossVR\pitboss_vr_layer.json" /t REG_DWORD /d 0 /f
-          3. RaceRoom neu starten (Steam: Doppelklick auf RaceRoom Racing
-             Experience, dann Variante "RaceRoom Racing Experience VR").
-             Steam und Virtual Desktop muessen NICHT neu gestartet werden.
-          4. Erwartung: Die Tafel (heller Rahmen, wandernder gruener Balken)
-             ist sichtbar, sobald RaceRoom rendert (im Menue und/oder auf
-             der Strecke). Falls nicht: siehe Fehlerdiagnose unten.
+          4. RaceRoom neu starten (Steam: Rechtsklick -> Eigenschaften ->
+             Startoptionen -> "RaceRoom Racing Experience (64-bit OpenXR)"
+             oder Startparameter -vr openxr). Steam und Virtual Desktop
+             muessen NICHT neu gestartet werden.
+
+          FALLS NICHTS ZU SEHEN IST: Pruefprogramm pitboss_vr_check.exe
+          per Doppelklick starten. Es prueft Registry-Eintraege, Manifest
+          und DLL-Ladbarkeit und schreibt das Ergebnis in die Datei
+          pitboss_vr_check.txt (gleicher Ordner). Diese Datei bitte
+          zur Fehleranalyse weiterleiten.
 
           Deaktivieren (EINE Zeile):
                reg delete "HKCU\SOFTWARE\Khronos\OpenXR\1\ApiLayers\Implicit" /v "S:\PitBossVR\pitboss_vr_layer.json" /f
-
-          Fehlerdiagnose: Der Layer schreibt beim Laden ein Logbuch.
-          Windows-Taste + R druecken, %temp% eingeben, Enter, dann die
-          Datei PitBossVR_layer.log mit dem Editor oeffnen.
-          - Keine Datei vorhanden: Der Layer wurde nicht geladen.
-          - Datei vorhanden: bitte den Inhalt weiterleiten.
 
           Hinweis: Der Layer prueft selbst, ob er im RaceRoom-Prozess
           (RRRE.exe) laeuft. In allen anderen OpenXR-Anwendungen bleibt er
@@ -81,8 +93,9 @@ jobs:
           gh release create $tag `
             --prerelease `
             --target $env:GITHUB_SHA `
-            --title "VR-Layer PoC (Testtafel)" `
-            --notes "Automatisch gebaute VR-Layer-DLL fuer den Praxis-Test. Aktivierung als impliziter Layer ueber die Registry (siehe LIESMICH.txt). Enthaelt Diagnose-Log (%TEMP%\PitBossVR_layer.log). Kein Teil des Setups; Pre-Release, wird vom Updater ignoriert." `
+            --title "VR-Layer PoC (Testtafel + Pruefprogramm)" `
+            --notes "Automatisch gebaute VR-Layer-DLL fuer den Praxis-Test. Aktivierung als impliziter Layer ueber die Registry (siehe LIESMICH.txt). Enthaelt Diagnose-Log (%TEMP%\PitBossVR_layer.log) und Pruefprogramm pitboss_vr_check.exe. Kein Teil des Setups; Pre-Release, wird vom Updater ignoriert." `
             "$dir\XR_APILAYER_PitBossR3E_VR.dll" `
             "$dir\pitboss_vr_layer.json" `
+            "$dir\pitboss_vr_check.exe" `
             "$dir\LIESMICH.txt"
