@@ -33,7 +33,7 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.1.1 Beta"
+APP_VERSION = "0.4.2.0 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -1944,27 +1944,45 @@ class OverlayStyleMixin:
             om.addAction(label, lambda v=val: self.set_ui_opacity(v))
         om.addSeparator()
         om.addAction("Regler … (Alt+Mausrad: 5-%-Schritte)", self._opacity_dialog)
-        # 0.4.0.0: Pro Overlay einstellen, ob es in die VR gespiegelt wird
-        # (VR-Spiegel "Monitor 1:1"). Die Einstellung landet in vr_overlay.json
-        # und gilt fuer alle Overlays dieser Art.
-        vr_a = menu.addAction("In VR zeigen")
-        vr_a.setCheckable(True)
+        # 0.4.2.0: Pro Overlay einstellen, WO es sichtbar ist: am Monitor,
+        # in der VR oder beides. "Nur VR" versteckt das Fenster am Monitor -
+        # gespiegelt wird es trotzdem (grab rendert versteckte Fenster).
+        vm = menu.addMenu("Anzeige (Monitor/VR)")
         try:
             _cfg_vr = vr_overlay.load_config(VR_CONFIG_PATH)
-            vr_a.setChecked(type(self).__name__ not in vr_overlay.hidden_classes(_cfg_vr))
         except Exception:
-            vr_a.setChecked(True)
-        def _toggle_vr_show(on, _cls=type(self).__name__):
+            _cfg_vr = {}
+        _cls = type(self).__name__
+        _mode = vr_overlay.mode_of(_cfg_vr, _cls)
+        def _set_mode(m, _cls2=_cls, _w=self):
             try:
-                lst = set(vr_overlay.load_config(VR_CONFIG_PATH).get("vr_hidden", []) or [])
-                if on:
-                    lst.discard(_cls)
-                else:
-                    lst.add(_cls)
-                vr_overlay.save_config(VR_CONFIG_PATH, {"vr_hidden": sorted(lst)})
+                cfg = vr_overlay.load_config(VR_CONFIG_PATH)
+                hd = set(x for x in (cfg.get("vr_hidden", []) or []) if isinstance(x, str))
+                vo = set(x for x in (cfg.get("vr_vronly", []) or []) if isinstance(x, str))
+                hd.discard(_cls2)
+                vo.discard(_cls2)
+                if m == "monitor":
+                    hd.add(_cls2)
+                elif m == "vr":
+                    vo.add(_cls2)
+                vr_overlay.save_config(VR_CONFIG_PATH,
+                                        {"vr_hidden": sorted(hd), "vr_vronly": sorted(vo)})
             except Exception:
                 pass
-        vr_a.toggled.connect(_toggle_vr_show)
+            try:
+                if m == "vr":
+                    _w.hide()
+                elif not _w.isVisible():
+                    _w.show()
+            except Exception:
+                pass
+        for _lbl, _m in (("Beide (Monitor + VR)", "both"),
+                         ("Nur Monitor", "monitor"),
+                         ("Nur VR (Monitor aus)", "vr")):
+            _a = vm.addAction(_lbl)
+            _a.setCheckable(True)
+            _a.setChecked(_mode == _m)
+            _a.triggered.connect(lambda _=False, _m2=_m: _set_mode(_m2))
         menu.exec(event.globalPos())
 
     # ---- 0.4.9.8: Groesse per Ziehen veraendern -------------------------
@@ -6239,6 +6257,15 @@ class Main(QMainWindow):
                     pass
         except Exception:
             pass
+        # 0.4.2.0: "Nur VR"-Overlays nach der Wiederherstellung verstecken
+        # (sie sind nur in der VR sichtbar, werden aber gespiegelt).
+        try:
+            _vo = vr_overlay.vronly_classes(vr_overlay.load_config(VR_CONFIG_PATH))
+            for w in self.all_overlay_windows():
+                if type(w).__name__ in _vo:
+                    w.hide()
+        except Exception:
+            pass
         # 0.4.0.0: VR-Tafel gemaess gespeicherter Konfiguration aktivieren
         try:
             if vr_overlay.load_config(VR_CONFIG_PATH).get("enabled"):
@@ -7753,21 +7780,20 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             return True
 
     def toggle_vr_overlay(self):  # 0.4.0.0
-        """VR-Spiegel an/aus (PBVR v2, "Monitor 1:1"): legt das Shared Memory
-        in Bildschirmgroesse an bzw. gibt es frei. Die DLL im Spiel zeigt
+        """VR-Spiegel an/aus (PBVR v3): legt das Shared Memory an bzw. gibt
+        es frei. Jedes Overlay wird als EIGENE Tafel mit eigener Pose
+        (Position, Abstand, Kippung) in die VR geschrieben. Die DLL im Spiel zeigt
         ohne PitBoss ihr Testmuster (wandernder Balken), mit PitBoss die
         gespiegelten Desktop-Overlays. Kein eigenes Fenster - der Haken im
         Menue spiegelt nur den Zustand des Spiegels."""
         if self.vr_board is None:
-            scr = QApplication.primaryScreen().geometry()
-            cw, ch, _s = vr_overlay.canvas_size(scr.width(), scr.height())
-            b = vr_overlay.VRMirror(cw, ch, vr_overlay.load_config(VR_CONFIG_PATH))
+            b = vr_overlay.VRMirror(vr_overlay.load_config(VR_CONFIG_PATH))
             if not b.start():
                 self.log.append("VR-Overlay: Shared Memory konnte nicht angelegt werden - VR-Spiegel nicht verfuegbar.")
                 return
             self.vr_board = b
             self._vr_save_config(enabled=True)
-            self.log.append(f"VR-Overlay aktiv: Monitor wird 1:1 in die VR gespiegelt ({cw}x{ch} Pixel, max. 20 Bilder/s). Fenster verschieben/skalieren/Deckkraft/zumachen wirkt sofort in der VR.")
+            self.log.append(f"VR-Overlay aktiv: Jedes Overlay ist jetzt eine eigene Tafel in der VR (eigene Position, eigener Abstand, eigene Kippung). Aenderungen wirken sofort (max. 10 Bilder/s).")
         else:
             self.vr_board.stop()
             self.vr_board = None
@@ -7844,9 +7870,16 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
 
     def vr_arrange_targets(self):
         out = []
+        try:
+            _vronly = vr_overlay.vronly_classes(vr_overlay.load_config(VR_CONFIG_PATH))
+        except Exception:
+            _vronly = set()
         for w in self.all_overlay_windows():
             try:
-                if w.isVisible() and w.frameGeometry().width() > 0:
+                # 0.4.2.0: "nur VR"-Overlays sind am Monitor versteckt,
+                # koennen im Anordnen-Modus aber trotzdem bearbeitet werden.
+                if w.frameGeometry().width() > 0 and (
+                        w.isVisible() or type(w).__name__ in _vronly):
                     out.append(w)
             except Exception:
                 pass
@@ -7900,7 +7933,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         {Klassenname: Faktor 0.5..2.0}; der Spiegel skaliert das Overlay
         um seine Mitte."""
         w = getattr(self, attr, None)
-        if w is None or not w.isVisible():
+        if w is None:
             return
         try:
             cfg = vr_overlay.load_config(VR_CONFIG_PATH)
@@ -7925,6 +7958,69 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         except Exception:
             pass
 
+    def set_overlay_mode(self, attr, mode):  # 0.4.2.0: Monitor/VR-Trennung
+        """Anzeige-Modus eines Overlays: 'both', 'monitor' oder 'vr'.
+        'vr' (nur VR) versteckt das Fenster am Monitor - gespiegelt wird es
+        trotzdem, weil grab() auch unsichtbare Fenster rendert."""
+        w = getattr(self, attr, None)
+        if w is None:
+            return
+        mode = mode if mode in ("both", "monitor", "vr") else "both"
+        try:
+            cfg = vr_overlay.load_config(VR_CONFIG_PATH)
+            cls = type(w).__name__
+            hd = set(x for x in (cfg.get("vr_hidden", []) or []) if isinstance(x, str))
+            vo = set(x for x in (cfg.get("vr_vronly", []) or []) if isinstance(x, str))
+            hd.discard(cls)
+            vo.discard(cls)
+            if mode == "monitor":
+                hd.add(cls)
+            elif mode == "vr":
+                vo.add(cls)
+            self._vr_save_config(vr_hidden=sorted(hd), vr_vronly=sorted(vo))
+        except Exception:
+            pass
+        try:
+            if mode == "vr":
+                w.hide()
+            elif not w.isVisible():
+                w.show()
+        except Exception:
+            pass
+        self._sync_overlay_menu_checks()
+
+    def vr_tilt_step(self, attr, dp, dy):  # 0.4.2.0: Kippung je Overlay
+        """Kippung eines Overlays in Grad aendern (dp = vertikal/pitch,
+        dy = horizontal/yaw; Bereich +-60 Grad). Gespeichert in
+        vr_overlay.json als vr_tilt {Klassenname: [pitch_deg, yaw_deg]}."""
+        w = getattr(self, attr, None)
+        if w is None:
+            return
+        try:
+            cfg = vr_overlay.load_config(VR_CONFIG_PATH)
+            m = dict(cfg.get("vr_tilt", {}) or {})
+            k = type(w).__name__
+            t = list(m.get(k, (0.0, 0.0)) or (0.0, 0.0))
+            while len(t) < 2:
+                t.append(0.0)
+            t[0] = round(max(-60.0, min(60.0, float(t[0]) + float(dp))), 1)
+            t[1] = round(max(-60.0, min(60.0, float(t[1]) + float(dy))), 1)
+            m[k] = t
+            self._vr_save_config(vr_tilt=m)
+        except Exception:
+            pass
+
+    def vr_arrange_tilt(self, dp, dy):
+        """0.4.2.0: Kippung des im Anordnen-Modus ausgewaehlten Overlays
+        (Tasten: Pos1/Ende = vertikal, Komma/Punkt = horizontal)."""
+        w = self.vr_arrange_selected()
+        if w is None:
+            return
+        for attr, _ in (getattr(self, "_ov_toggle_slots", {}) or {}).items():
+            if getattr(self, attr, None) is w:
+                self.vr_tilt_step(attr, dp, dy)
+                return
+
     def toggle_vr_arrange(self, on=None):
         if on is None:
             on = not bool(getattr(self, "_vr_arrange", False))
@@ -7939,7 +8035,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 pass
         try:
             if on:
-                self.log.append("VR-Anordnen aktiv: Pfeiltasten = verschieben (Shift = fein), Bild auf/ab = Groesse, Einfg/Entf = Abstand, Leertaste = naechstes Overlay, " + str(self.hotkey_config.get("vr_arrange", "F4")) + " = Modus aus.")
+                self.log.append("VR-Anordnen aktiv: Pfeiltasten = verschieben (Shift = fein), Bild auf/ab = Groesse, Einfg/Entf = Abstand, Pos1/Ende = vertikal kippen, Komma/Punkt = horizontal kippen, Leertaste = naechstes Overlay, " + str(self.hotkey_config.get("vr_arrange", "F4")) + " = Modus aus.")
             else:
                 self.log.append("VR-Anordnen aus.")
         except Exception:
@@ -7964,7 +8060,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         dlg.setWindowTitle("Overlays verwalten")
         dlg.setModal(False)
         lay = QVBoxLayout(dlg)
-        hint = QLabel("Haken setzen oder entfernen - dieses Fenster bleibt offen, bis du es selbst schließt. Änderungen wirken sofort (auch in der VR).")
+        hint = QLabel("Haken setzen oder entfernen - dieses Fenster bleibt offen, bis du es selbst schließt. Änderungen wirken sofort (auch in der VR).\nNeu (0.4.2.0): Modus je Overlay (Beide / Monitor / VR) und Kipp-Buttons H−/H+/V−/V+ (je 5 Grad).")
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#888;")
         lay.addWidget(hint)
@@ -7983,7 +8079,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             _mk(label, slot, self._ov_toggle_acts.get(attr))
         # 0.4.1.0: Position & Groesse je Overlay - am Monitor bedienbar, auch
         # wenn das Spiel den Desktop ueberdeckt; wirkt sofort in der VR.
-        pos_sep = QLabel("Position & Größe (wirkt sofort in der VR)")
+        pos_sep = QLabel("Position, Größe, Abstand, Modus & Kippung (wirken sofort in der VR)")
         pos_sep.setStyleSheet("color:#888;font-weight:bold;")
         lay.addWidget(pos_sep)
 
@@ -8011,6 +8107,20 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         for attr, (label, _slot) in (getattr(self, "_ov_toggle_slots", {}) or {}).items():
             row = QHBoxLayout()
             row.addWidget(QLabel(label))
+            # 0.4.2.0: Anzeige-Modus je Overlay - Beide / nur Monitor / nur VR
+            combo = QComboBox()
+            combo.addItems(("Beide", "Monitor", "VR"))
+            try:
+                _w0 = getattr(self, attr, None)
+                combo.setCurrentIndex({"both": 0, "monitor": 1, "vr": 2}[
+                    vr_overlay.mode_of(vr_overlay.load_config(VR_CONFIG_PATH),
+                                       type(_w0).__name__) if _w0 is not None else "both"])
+            except Exception:
+                combo.setCurrentIndex(0)
+            combo.setToolTip("Beide = Monitor + VR, Monitor = nur am Desktop,\nVR = nur in der Brille (am Monitor unsichtbar)")
+            combo.currentIndexChanged.connect(
+                lambda idx, a=attr: self.set_overlay_mode(a, ("both", "monitor", "vr")[idx]))
+            row.addWidget(combo)
             row.addStretch(1)
             for txt, slot in (("◀", lambda a=attr: _mgr_mv(a, -32, 0)),
                               ("▶", lambda a=attr: _mgr_mv(a, 32, 0)),
@@ -8019,7 +8129,11 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                               ("−", lambda a=attr: _mgr_sc(a, -0.1)),
                               ("+", lambda a=attr: _mgr_sc(a, 0.1)),
                               ("Nah", lambda a=attr: self.vr_depth_step(a, 0.1)),
-                              ("Fern", lambda a=attr: self.vr_depth_step(a, -0.1))):
+                              ("Fern", lambda a=attr: self.vr_depth_step(a, -0.1)),
+                              ("H−", lambda a=attr: self.vr_tilt_step(a, 0.0, -5.0)),
+                              ("H+", lambda a=attr: self.vr_tilt_step(a, 0.0, 5.0)),
+                              ("V−", lambda a=attr: self.vr_tilt_step(a, -5.0, 0.0)),
+                              ("V+", lambda a=attr: self.vr_tilt_step(a, 5.0, 0.0))):
                 btn = QPushButton(txt)
                 btn.setFixedWidth(34)
                 btn.setToolTip("Nur bei offenem Overlay wirksam")
@@ -8116,10 +8230,13 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         dlg.resize(430, 300)
         dlg.exec()
 
-    def _vr_mirror_tick(self):  # 0.4.0.0: Monitor 1:1 in die VR spiegeln
-        """Sammtliche offenen Desktop-Overlays per QPainter auf die Leinwand
-        komponieren (C++-schnell, 20 Hz gedrosselt) und in das PBVR-Shared-
-        Memory schreiben. Der Layer aktualisiert nur bei neuem frame-Zaehler."""
+    def _vr_mirror_tick(self):  # 0.4.2.0: Jedes Overlay = eigene VR-Tafel (PBVR v3)
+        """Je Overlay ein eigenes Bild mit eigener Pose in das PBVR-v3-Shared-
+        Memory schreiben: eigene Position, eigener Abstand (Tiefe), eigene
+        Kippung - wie OpenKneeboard. Die Diagnose-Tafel (Rahmen/Magenta/
+        Fakten) ist ein zusaetzlicher Slot mit der Pose des virtuellen
+        Bildschirms. grab() rendert auch versteckte Fenster, deshalb
+        funktionieren "nur VR"-Overlays am Monitor unsichtbar."""
         import time as _t
         b = getattr(self, "vr_board", None)
         if b is None:
@@ -8129,185 +8246,172 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             return
         scr = QApplication.primaryScreen().geometry()
         cw, ch, s = vr_overlay.canvas_size(scr.width(), scr.height())
-        if cw != b.w or ch != b.h:
-            # Aufloesung geaendert: Leinwand neu anlegen (der Layer baut die
-            # Swapchain selbst neu auf, sobald die Header-Masse wechseln).
-            b.stop()
-            b2 = vr_overlay.VRMirror(cw, ch, vr_overlay.load_config(VR_CONFIG_PATH))
-            if not b2.start():
-                self.vr_board = None
-                # 0.4.0.4: bisher starb der Spiegel hier stillschweigend.
-                self.log.append("VR-WARNUNG: Leinwand-Neuaufbau nach Aufloesungswechsel fehlgeschlagen - VR-Spiegel gestoppt.")
-                return
-            self.vr_board = b = b2
         cfg = vr_overlay.load_config(VR_CONFIG_PATH)
-        hidden = vr_overlay.hidden_classes(cfg)
-        # 0.4.0.3: Rahmen-Zustand pro Bild aus der Konfiguration nehmen -
-        # so wirkt der Menue-Haken sicher, selbst wenn die Instanz neu
-        # aufgebaut wurde oder das Signal-Argument fehlt.
+        vronly = vr_overlay.vronly_classes(cfg)
         show_frame = bool(cfg.get("show_frame", True))
-        b.show_frame = show_frame
         backdrop = min(100, max(0, int(cfg.get("vr_backdrop", 60))))
         z = max(1.0, float(cfg.get("vr_zoom", 1.0)))  # 0.4.0.9: VR-Zoom
-        # 0.4.0.10: Overlay-Deckkraft in der VR. Die Desktop-Overlays blenden
-        # ihren Hintergrund ueber ov_opacity ab (Standard 0 = durchscheinend);
-        # in der VR war das schlicht zu transparent. Der Grab rendert mit
-        # angehobener Deckkraft - nur fuer das VR-Bild, der Monitor bleibt
-        # unveraendert, grab() zeichnet abseits des Bildschirms.
+        # 0.4.0.10: Overlay-Deckkraft NUR im VR-Grab anheben - der Monitor
+        # bleibt unveraendert, grab() zeichnet abseits des Bildschirms.
         gain = min(100, max(0, int(cfg.get("vr_gain", 100))))
-        # 0.4.1.1: per-Overlay-Abstand in der VR (nah = groesser, fern =
-        # kleiner; um die Overlay-Mitte skaliert). Map: Klassenname -> Faktor.
-        try:
-            _depth = dict(cfg.get("vr_depth", {}) or {})
-        except Exception:
-            _depth = {}
         debug = bool(cfg.get("vr_debug", False))  # 0.4.0.4
-        # 0.4.1.1: Leinwand-Puffer WIEDERVERWENDEN statt pro Bild neu
-        # reservieren (~20 MB bei 3440x1440, 20x pro Sekunde -> Mikroruckler
-        # beim Fahren). Neuanlage nur bei Groessenaenderung.
-        canvas = getattr(self, "_vr_canvas", None)
-        if canvas is None or canvas.width() != b.w or canvas.height() != b.h:
-            canvas = QImage(b.w, b.h, QImage.Format_ARGB32_Premultiplied)
-            self._vr_canvas = canvas
-            self._vr_idle_pub = False
-        canvas.fill(Qt.transparent)
-        p = QPainter(canvas)
-        p.setOpacity(getattr(b, "opacity", 1.0))
-        ox, oy = scr.x(), scr.y()
+        boardW, boardH, _, boardY, boardZ, _, _ = vr_overlay.board_pose(cfg, cw, ch)
+        sel = self.vr_arrange_selected() if getattr(self, "_vr_arrange", False) else None
+        slots = []
         drawn, skipped = 0, 0  # 0.4.0.4: Diagnose-Zaehler
         for w in self.all_overlay_windows():
             try:
-                if not w.isVisible() or type(w).__name__ in hidden:
+                cls = type(w).__name__
+                mode = vr_overlay.mode_of(cfg, cls)
+                if mode == "monitor":
+                    skipped += 1
+                    continue
+                # "nur VR" (Modus VR): Fenster ist am Monitor versteckt,
+                # wird hier aber trotzdem gespiegelt (grab rendert hidden).
+                if not w.isVisible() and mode != "vr":
                     skipped += 1
                     continue
                 g = w.frameGeometry()
                 if g.width() <= 0 or g.height() <= 0:
                     skipped += 1
                     continue
-                # 0.4.1.1: Abstands-Faktor dieses Overlays (1.0 = Standard),
-                # um die Overlay-Mitte skaliert, damit "nah" das Overlay um
-                # seine Mitte wachsen laesst und nicht nach unten rechts weg.
-                try:
-                    df = float(_depth.get(type(w).__name__, 1.0))
-                except Exception:
-                    df = 1.0
-                df = max(0.5, min(2.0, df))
-                zx = (g.x() - ox) * s * z
-                zy = (g.y() - oy) * s * z
+                # 0.4.1.1: Abstands-Faktor (nah = groesser und naeher)
+                df = vr_overlay.depth_from_config(cfg, cls)
                 zw = max(1, int(round(g.width() * s * z * df)))
                 zh = max(1, int(round(g.height() * s * z * df)))
-                zx = int(round(zx + (g.width() * s * z - zw) / 2.0))
-                zy = int(round(zy + (g.height() * s * z - zh) / 2.0))
-                # 0.4.0.3: dunkler Hintergrund hinter dem Overlay - hebt
-                # die Schrift im Rennbild ab (Regler "Hintergrund", 0 = aus).
+                # Mittelpunkt des (skalierten) Overlays in Leinwand-Pixeln
+                mx = (g.x() - scr.x()) * s * z + (g.width() * s * z) / 2.0
+                my = (g.y() - scr.y()) * s * z + (g.height() * s * z) / 2.0
+                img = QImage(zw, zh, QImage.Format_ARGB32_Premultiplied)
+                img.fill(Qt.transparent)
+                p = QPainter(img)
+                # 0.4.0.3: dunkler Hintergrund hinter dem Overlay
                 if backdrop > 0:
-                    p.fillRect(zx, zy, zw, zh,
+                    p.fillRect(0, 0, zw, zh,
                                QColor(8, 8, 10, int(255 * backdrop / 100)))
                 # 0.4.0.10: Hintergrund-Alpha nur fuer den VR-Grab anheben
-                # (ov_opacity fliesst in paintEvent in _bg()/_panel() ein,
-                # die Schrift bleibt immer voll deckend). Originalwert danach
-                # sofort wiederherstellen.
                 try:
                     _ovbase = max(0.0, min(1.0, float(getattr(w, "ov_opacity", 0.0))))
                 except Exception:
                     _ovbase = 0.0
                 w.ov_opacity = max(0.0, min(1.0, _ovbase + (1.0 - _ovbase) * (gain / 100.0)))
-                img = w.grab().toImage()
+                grabbed = w.grab().toImage()
                 w.ov_opacity = _ovbase
-                if s != 1.0 or z != 1.0 or df != 1.0:  # 0.4.0.9: Zoom = VR-Lesbarkeit
-                    img = img.scaled(zw, zh,
-                                     Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-                p.drawImage(zx, zy, img)
+                if grabbed.width() != zw or grabbed.height() != zh:
+                    grabbed = grabbed.scaled(zw, zh,
+                                             Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+                p.setOpacity(getattr(b, "opacity", 1.0))
+                p.drawImage(0, 0, grabbed)
+                p.setOpacity(1.0)
+                if w is sel:  # 0.4.1.0: Auswahl-Markierung im Anordnen-Modus
+                    p.setBrush(Qt.NoBrush)
+                    p.setPen(QPen(QColor(0, 229, 255, 240), 5))
+                    p.drawRect(2, 2, zw - 5, zh - 5)
+                    p.setPen(QColor(0, 229, 255, 240))
+                    _afont = QFont("Segoe UI")
+                    _afont.setPixelSize(max(12, zh // 12))
+                    p.setFont(_afont)
+                    p.drawText(8, zh - 8, "Anordnen: " + self.vr_arrange_label(w))
+                p.end()
+                # Pixel sauber abholen (Stride-Padding abfangen)
+                ptr = img.constBits()
+                bpl = img.bytesPerLine()
+                if bpl == zw * 4:
+                    px = bytes(ptr)[:zw * zh * 4]
+                else:
+                    px = b"".join(bytes(ptr[y * bpl:(y + 1) * bpl]) for y in range(zh))
+                # 0.4.2.0: Pose je Overlay (Position + Tiefe + Kippung)
+                quad_w, _, pos_x, pos_y, _, _, _ = vr_overlay.overlay_pose(
+                    cfg, cw, ch, mx, my, zw, zh)
+                quad_h = quad_w * float(zh) / max(1.0, float(zw))
+                pitch, yaw = vr_overlay.tilt_from_config(cfg, cls)
+                slots.append({"w": zw, "h": zh, "pixels": px,
+                              "quadW": quad_w, "quadH": quad_h,
+                              "posX": pos_x, "posY": pos_y, "posZ": boardZ / df,
+                              "pitch": pitch, "yaw": yaw})
                 drawn += 1
             except Exception:
                 continue
-        if getattr(self, "_vr_arrange", False):  # 0.4.1.0: Auswahl-Markierung
-            sel = self.vr_arrange_selected()
+        # Slot-Deckel: die DLL nimmt max. 16 Tafeln; die Diagnose-Tafel
+        # braucht noch einen Platz.
+        if len(slots) >= vr_overlay.MAX_SLOTS:
+            slots = slots[:vr_overlay.MAX_SLOTS - 1]
+        # Diagnose-Tafel (virtueller Bildschirm): Rahmen + Magenta + Fakten
+        if show_frame or debug or sel is not None:
+            canvas = getattr(self, "_vr_canvas", None)
+            if canvas is None or canvas.width() != cw or canvas.height() != ch:
+                canvas = QImage(cw, ch, QImage.Format_ARGB32_Premultiplied)
+                self._vr_canvas = canvas
+            canvas.fill(Qt.transparent)
+            p = QPainter(canvas)
+            p.setOpacity(1.0)
+            if show_frame:
+                p.setPen(QPen(QColor(208, 208, 208, 170), 3, Qt.DashLine))
+                p.drawRect(0, 0, cw - 1, ch - 1)
+            if debug:  # 0.4.0.4: Magenta-Marker + Fakten auf die Tafel
+                p.setPen(QPen(QColor(255, 0, 255, 220), 6, Qt.DashLine))
+                p.drawRect(8, 8, cw - 17, ch - 17)
+                dfont = QFont("Segoe UI")
+                dfont.setPixelSize(max(18, ch // 45))
+                p.setFont(dfont)
+                fm = QFontMetricsF(dfont)
+                zeile1 = "PitBoss {v}: Rahmen {fr}, Hintergrund {bd} %, Overlay-Deckkraft {g} %".format(
+                    v=APP_VERSION, fr=("AN" if show_frame else "AUS"), bd=backdrop, g=gain)
+                zeile2 = "{d} Overlay(s) als eigene Tafel (Pose je Overlay), Zoom {z}x, Bild #{f}, {w}x{h}, Schreiben {pub}".format(
+                    d=drawn, z=("%.1f" % z), f=getattr(b, "_frame", 0), w=cw, h=ch,
+                    pub=("OK" if getattr(b, "_pub_ok", True) else "FEHLER"))
+                boxw = max(int(fm.horizontalAdvance(zeile1)), int(fm.horizontalAdvance(zeile2))) + 28
+                lh = int(fm.height())
+                p.fillRect(24, 24, boxw, lh * 2 + 18, QColor(0, 0, 0, 180))
+                p.setPen(QColor(255, 255, 255, 235))
+                ty = 24 + 9 + int(fm.ascent())
+                p.drawText(38, ty, zeile1)
+                p.drawText(38, ty + lh, zeile2)
             if sel is not None:
-                try:
-                    g = sel.frameGeometry()
-                    p.setOpacity(1.0)
-                    p.setBrush(Qt.NoBrush)
-                    p.setPen(QPen(QColor(0, 229, 255, 240), 5))
-                    try:
-                        _sdf = max(0.5, min(2.0, float(_depth.get(type(sel).__name__, 1.0))))
-                    except Exception:
-                        _sdf = 1.0
-                    _sw = max(1, int(round(g.width() * s * z * _sdf)))
-                    _sh = max(1, int(round(g.height() * s * z * _sdf)))
-                    p.drawRect(int(round((g.x() - ox) * s * z + (g.width() * s * z - _sw) / 2.0)),
-                               int(round((g.y() - oy) * s * z + (g.height() * s * z - _sh) / 2.0)),
-                               _sw, _sh)
-                    p.setPen(QColor(0, 229, 255, 240))
-                    p.drawText(24, b.h - 24, "Anordnen: " + self.vr_arrange_label(sel)
-                               + "  (Leertaste = naechstes, Pfeile = verschieben, Bild auf/ab = Groesse, Einfg/Entf = Abstand)")
-                except Exception:
-                    pass
-        if show_frame:
-            p.setOpacity(1.0)
-            p.setPen(QPen(QColor(208, 208, 208, 170), 3, Qt.DashLine))
-            p.drawRect(0, 0, b.w - 1, b.h - 1)
-        if debug:  # 0.4.0.4: eindeutiger Magenta-Marker - sieht man ihn in
-            # der VR, kommt definitiv das PitBoss-Bild an (nicht das DLL-
-            # Testmuster, das hat einen soliden grauen Rahmen).
-            p.setOpacity(1.0)
-            p.setPen(QPen(QColor(255, 0, 255, 220), 6, Qt.DashLine))
-            p.drawRect(8, 8, b.w - 17, b.h - 17)
-            # 0.4.0.5: Diagnose-Fakten direkt auf die Tafel zeichnen - in
-            # der VR lesbar, das Desktop-Log ist in der Brille nicht
-            # ablesbar. Zweizeilig oben links auf schwarzem Kasten.
-            dfont = QFont("Segoe UI")
-            dfont.setPixelSize(max(18, b.h // 45))
-            p.setFont(dfont)
-            fm = QFontMetricsF(dfont)
-            zeile1 = "PitBoss {v}: Rahmen {fr}, Hintergrund {bd} %, Overlay-Deckkraft {g} %".format(
-                v=APP_VERSION, fr=("AN" if show_frame else "AUS"), bd=backdrop, g=gain)
-            zeile2 = "{d} Overlay(s) gespiegelt, Zoom {z}x, Bild #{f}, {w}x{h}, Schreiben {pub}".format(
-                d=drawn, z=("%.1f" % z), f=getattr(b, "_frame", 0), w=b.w, h=b.h,
-                pub=("OK" if getattr(b, "_pub_ok", True) else "FEHLER"))
-            boxw = max(int(fm.horizontalAdvance(zeile1)), int(fm.horizontalAdvance(zeile2))) + 28
-            lh = int(fm.height())
-            p.fillRect(24, 24, boxw, lh * 2 + 18, QColor(0, 0, 0, 180))
-            p.setPen(QColor(255, 255, 255, 235))
-            ty = 24 + 9 + int(fm.ascent())
-            p.drawText(38, ty, zeile1)
-            p.drawText(38, ty + lh, zeile2)
-        p.end()
-        # 0.4.1.1: Leere Leinwand (keine Overlays, kein Rahmen/Diagnose/
-        # Anordnen) nur EINMAL veroeffentlichen und dann das Schreiben
-        # aussetzen - jeder publish() kopiert die komplette Leinwand in das
-        # Shared Memory; ohne Overlays waere das reine Last ohne Inhalt.
-        if drawn == 0 and not show_frame and not debug and not getattr(self, "_vr_arrange", False):
+                p.setPen(QColor(0, 229, 255, 240))
+                p.drawText(24, ch - 24, "Anordnen: " + self.vr_arrange_label(sel)
+                           + "  (Leertaste = naechstes, Pfeile = verschieben, Bild auf/ab = Groesse, Einfg/Entf = Abstand, Pos1/Ende = vertikal kippen, Komma/Punkt = horizontal kippen)")
+            p.end()
+            ptr = canvas.constBits()
+            bpl = canvas.bytesPerLine()
+            if bpl == cw * 4:
+                px = bytes(ptr)[:cw * ch * 4]
+            else:
+                px = b"".join(bytes(ptr[y * bpl:(y + 1) * bpl]) for y in range(ch))
+            slots.append({"w": cw, "h": ch, "pixels": px,
+                          "quadW": boardW, "quadH": boardH,
+                          "posX": 0.0, "posY": boardY, "posZ": boardZ,
+                          "pitch": 0.0, "yaw": 0.0})
+        # 0.4.1.1: Ohne Tafeln nur EINMAL veroeffentlichen (leert die VR),
+        # dann das Schreiben aussetzen - jedes publish() kopiert alle Pixel.
+        if not slots:
             if getattr(self, "_vr_idle_pub", False):
                 return
             self._vr_idle_pub = True
         else:
             self._vr_idle_pub = False
-        prev_last = getattr(b, "_last", now)  # 0.4.0.4: fuer die Altersangabe
-        # 0.4.1.1: constBits() direkt uebergeben (memoryview) statt eine
-        # zusaetzliche ~20-MB-Byte-Kopie pro Bild; Rueckfall nur bei Fehler.
-        published = b.publish(canvas.constBits(), now)
-        if not published:
-            published = b.publish(bytes(canvas.constBits()), now)
-        b._pub_ok = published  # 0.4.0.5: fuer die Diagnose-Anzeige auf der Tafel
+        prev_last = getattr(b, "_last", 0.0)  # 0.4.0.4: fuer die Altersangabe
+        published = b.publish_slots(slots, now)
+        b._pub_ok = published  # 0.4.0.5: fuer die Diagnose-Anzeige
         if debug:
             try:
                 if (now - getattr(b, "_dbg_last", 0.0)) >= 5.0:
                     b._dbg_last = now
                     self.log.append(
-                        "VR-Spiegel: {w}x{h}, {d} Overlay(s) gespiegelt, {sk} uebergangen, "
+                        "VR-Spiegel: {d} Overlay(s) als eigene Tafel, {sk} uebergangen, "
                         "Rahmen {fr}, Hintergrund {bd} %, Bild #{f}, letztes Bild vor {age:.1f} s, "
                         "Schreiben {pub}.".format(
-                            w=b.w, h=b.h, d=drawn, sk=skipped,
+                            d=drawn, sk=skipped,
                             fr="an" if show_frame else "AUS", bd=backdrop,
                             f=getattr(b, "_frame", 0),
                             age=(now - prev_last),
                             pub="OK" if published else "FEHLER"))
-                    # 0.4.0.8: Leinwand als PNG speichern - zeigt am Monitor,
-                    # was wirklich in der VR ankommt (Dokumente\PitBoss R3E).
+                    # 0.4.0.8: Diagnose-Leinwand als PNG (Dokumente\PitBoss R3E)
                     try:
-                        EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-                        canvas.save(str(EXPORT_DIR / "vr_debug_canvas.png"), "PNG")
+                        _dbg_canvas = getattr(self, "_vr_canvas", None)
+                        if _dbg_canvas is not None:
+                            EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+                            _dbg_canvas.save(str(EXPORT_DIR / "vr_debug_canvas.png"), "PNG")
                     except Exception:
                         pass
             except Exception:
@@ -8335,7 +8439,17 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         for attr, act in getattr(self, "_ov_toggle_acts", {}).items():
             try:
                 w = getattr(self, attr, None)
-                act.setChecked(w is not None and w.isVisible())
+                # 0.4.2.0: "Nur VR"-Overlays sind am Monitor unsichtbar,
+                # gelten aber als offen (der Haken bleibt gesetzt).
+                _isopen = False
+                if w is not None:
+                    try:
+                        _isopen = w.isVisible() or vr_overlay.mode_of(
+                            vr_overlay.load_config(VR_CONFIG_PATH),
+                            type(w).__name__) == "vr"
+                    except Exception:
+                        _isopen = w.isVisible()
+                act.setChecked(_isopen)
             except Exception:
                 pass
         # 0.4.0.0: VR-Tafel ist kein Fenster - eigener Haken
@@ -8947,6 +9061,11 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 ("arr_next", 0x20, self.vr_arrange_next),
                 ("arr_near", 0x2D, lambda: self.vr_arrange_depth(0.1)),
                 ("arr_far", 0x2E, lambda: self.vr_arrange_depth(-0.1)),
+                # 0.4.2.0: Kippung (wie OpenKneeboard), 5-Grad-Schritte
+                ("arr_pitchup", 0x24, lambda: self.vr_arrange_tilt(5.0, 0.0)),
+                ("arr_pitchdown", 0x23, lambda: self.vr_arrange_tilt(-5.0, 0.0)),
+                ("arr_yawleft", 0xBC, lambda: self.vr_arrange_tilt(0.0, -5.0)),
+                ("arr_yawright", 0xBE, lambda: self.vr_arrange_tilt(0.0, 5.0)),
             ):
                 down = self._vk_down(vk)
                 was_down = self.global_hotkey_state.get(key, False)
@@ -12209,6 +12328,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
