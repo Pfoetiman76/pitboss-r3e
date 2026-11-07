@@ -8,9 +8,16 @@ project(pitboss_vr_layer LANGUAGES CXX)
 # (release-1.1.45, Apache-2.0/MIT) werden beim Konfigurieren einmalig in den
 # Build-Ordner geladen. Kein SDK-Subprojekt, keine Submodule, keine
 # Generierung noetig - der PoC braucht nur die Header.
+#
+# CRT: Statisch gelinkt (/MT), damit die DLL keine MSVCP140/VCRUNTIME140-
+# Abhaengigkeiten hat und auf jedem System laed (der OpenXR-Loader
+# ueberspringt Layer stillschweigend, wenn LoadLibrary fehlschlaegt).
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Statische C-Runtime: keine externen VC-Redistributable-DLLs noetig
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
 
 set(PVR_OPENXR_DIR ${CMAKE_BINARY_DIR}/third_party/openxr)
 set(PVR_OPENXR_BASE
