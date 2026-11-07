@@ -112,11 +112,11 @@ def mirror_ohne_start():
 
 @case
 def mirror_throttle():
-    """too_soon haelt 20 Bilder/s ein."""
+    """too_soon haelt 10 Bilder/s ein (0.4.1.1)."""
     m = vo.VRMirror(64, 64, vo.DEFAULTS)
     m._last = 100.0
     assert m.too_soon(100.04) is True
-    assert m.too_soon(100.06) is False
+    assert m.too_soon(100.15) is False
 
 
 @case

@@ -33,7 +33,7 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.1.0 Beta"
+APP_VERSION = "0.4.1.1 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -7894,6 +7894,37 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             return
         self._vr_arrange_idx = (int(getattr(self, "_vr_arrange_idx", 0)) + 1) % len(ws)
 
+    def vr_depth_step(self, attr, d):  # 0.4.1.1: Abstand eines Overlays in der VR
+        """0.4.1.1: Per-Overlay-Abstand in der VR (nah = groesser, fern =
+        kleiner). Gespeichert in vr_overlay.json als vr_depth-Map
+        {Klassenname: Faktor 0.5..2.0}; der Spiegel skaliert das Overlay
+        um seine Mitte."""
+        w = getattr(self, attr, None)
+        if w is None or not w.isVisible():
+            return
+        try:
+            cfg = vr_overlay.load_config(VR_CONFIG_PATH)
+            m = dict(cfg.get("vr_depth", {}) or {})
+            k = type(w).__name__
+            m[k] = round(max(0.5, min(2.0, float(m.get(k, 1.0)) + float(d))), 2)
+            self._vr_save_config(vr_depth=m)
+        except Exception:
+            pass
+
+    def vr_arrange_depth(self, d):
+        """0.4.1.1: Abstand des im Anordnen-Modus ausgewaehlten Overlays."""
+        w = self.vr_arrange_selected()
+        if w is None:
+            return
+        try:
+            cfg = vr_overlay.load_config(VR_CONFIG_PATH)
+            m = dict(cfg.get("vr_depth", {}) or {})
+            k = type(w).__name__
+            m[k] = round(max(0.5, min(2.0, float(m.get(k, 1.0)) + float(d))), 2)
+            self._vr_save_config(vr_depth=m)
+        except Exception:
+            pass
+
     def toggle_vr_arrange(self, on=None):
         if on is None:
             on = not bool(getattr(self, "_vr_arrange", False))
@@ -7908,7 +7939,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 pass
         try:
             if on:
-                self.log.append("VR-Anordnen aktiv: Pfeiltasten = verschieben (Shift = fein), Bild auf/ab = Groesse, Leertaste = naechstes Overlay, " + str(self.hotkey_config.get("vr_arrange", "F4")) + " = Modus aus.")
+                self.log.append("VR-Anordnen aktiv: Pfeiltasten = verschieben (Shift = fein), Bild auf/ab = Groesse, Einfg/Entf = Abstand, Leertaste = naechstes Overlay, " + str(self.hotkey_config.get("vr_arrange", "F4")) + " = Modus aus.")
             else:
                 self.log.append("VR-Anordnen aus.")
         except Exception:
@@ -7986,7 +8017,9 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                               ("▲", lambda a=attr: _mgr_mv(a, 0, -32)),
                               ("▼", lambda a=attr: _mgr_mv(a, 0, 32)),
                               ("−", lambda a=attr: _mgr_sc(a, -0.1)),
-                              ("+", lambda a=attr: _mgr_sc(a, 0.1))):
+                              ("+", lambda a=attr: _mgr_sc(a, 0.1)),
+                              ("Nah", lambda a=attr: self.vr_depth_step(a, 0.1)),
+                              ("Fern", lambda a=attr: self.vr_depth_step(a, -0.1))):
                 btn = QPushButton(txt)
                 btn.setFixedWidth(34)
                 btn.setToolTip("Nur bei offenem Overlay wirksam")
@@ -8122,8 +8155,21 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         # angehobener Deckkraft - nur fuer das VR-Bild, der Monitor bleibt
         # unveraendert, grab() zeichnet abseits des Bildschirms.
         gain = min(100, max(0, int(cfg.get("vr_gain", 100))))
+        # 0.4.1.1: per-Overlay-Abstand in der VR (nah = groesser, fern =
+        # kleiner; um die Overlay-Mitte skaliert). Map: Klassenname -> Faktor.
+        try:
+            _depth = dict(cfg.get("vr_depth", {}) or {})
+        except Exception:
+            _depth = {}
         debug = bool(cfg.get("vr_debug", False))  # 0.4.0.4
-        canvas = QImage(b.w, b.h, QImage.Format_ARGB32_Premultiplied)
+        # 0.4.1.1: Leinwand-Puffer WIEDERVERWENDEN statt pro Bild neu
+        # reservieren (~20 MB bei 3440x1440, 20x pro Sekunde -> Mikroruckler
+        # beim Fahren). Neuanlage nur bei Groessenaenderung.
+        canvas = getattr(self, "_vr_canvas", None)
+        if canvas is None or canvas.width() != b.w or canvas.height() != b.h:
+            canvas = QImage(b.w, b.h, QImage.Format_ARGB32_Premultiplied)
+            self._vr_canvas = canvas
+            self._vr_idle_pub = False
         canvas.fill(Qt.transparent)
         p = QPainter(canvas)
         p.setOpacity(getattr(b, "opacity", 1.0))
@@ -8138,13 +8184,24 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 if g.width() <= 0 or g.height() <= 0:
                     skipped += 1
                     continue
+                # 0.4.1.1: Abstands-Faktor dieses Overlays (1.0 = Standard),
+                # um die Overlay-Mitte skaliert, damit "nah" das Overlay um
+                # seine Mitte wachsen laesst und nicht nach unten rechts weg.
+                try:
+                    df = float(_depth.get(type(w).__name__, 1.0))
+                except Exception:
+                    df = 1.0
+                df = max(0.5, min(2.0, df))
+                zx = (g.x() - ox) * s * z
+                zy = (g.y() - oy) * s * z
+                zw = max(1, int(round(g.width() * s * z * df)))
+                zh = max(1, int(round(g.height() * s * z * df)))
+                zx = int(round(zx + (g.width() * s * z - zw) / 2.0))
+                zy = int(round(zy + (g.height() * s * z - zh) / 2.0))
                 # 0.4.0.3: dunkler Hintergrund hinter dem Overlay - hebt
                 # die Schrift im Rennbild ab (Regler "Hintergrund", 0 = aus).
                 if backdrop > 0:
-                    p.fillRect(int(round((g.x() - ox) * s * z)),
-                               int(round((g.y() - oy) * s * z)),
-                               max(1, int(round(g.width() * s * z))),
-                               max(1, int(round(g.height() * s * z))),
+                    p.fillRect(zx, zy, zw, zh,
                                QColor(8, 8, 10, int(255 * backdrop / 100)))
                 # 0.4.0.10: Hintergrund-Alpha nur fuer den VR-Grab anheben
                 # (ov_opacity fliesst in paintEvent in _bg()/_panel() ein,
@@ -8157,12 +8214,10 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 w.ov_opacity = max(0.0, min(1.0, _ovbase + (1.0 - _ovbase) * (gain / 100.0)))
                 img = w.grab().toImage()
                 w.ov_opacity = _ovbase
-                if s != 1.0 or z != 1.0:  # 0.4.0.9: Zoom = VR-Lesbarkeit
-                    img = img.scaled(max(1, int(round(g.width() * s * z))),
-                                     max(1, int(round(g.height() * s * z))),
+                if s != 1.0 or z != 1.0 or df != 1.0:  # 0.4.0.9: Zoom = VR-Lesbarkeit
+                    img = img.scaled(zw, zh,
                                      Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-                p.drawImage(int(round((g.x() - ox) * s * z)),
-                            int(round((g.y() - oy) * s * z)), img)
+                p.drawImage(zx, zy, img)
                 drawn += 1
             except Exception:
                 continue
@@ -8174,13 +8229,18 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                     p.setOpacity(1.0)
                     p.setBrush(Qt.NoBrush)
                     p.setPen(QPen(QColor(0, 229, 255, 240), 5))
-                    p.drawRect(int(round((g.x() - ox) * s * z)),
-                               int(round((g.y() - oy) * s * z)),
-                               max(1, int(round(g.width() * s * z))),
-                               max(1, int(round(g.height() * s * z))))
+                    try:
+                        _sdf = max(0.5, min(2.0, float(_depth.get(type(sel).__name__, 1.0))))
+                    except Exception:
+                        _sdf = 1.0
+                    _sw = max(1, int(round(g.width() * s * z * _sdf)))
+                    _sh = max(1, int(round(g.height() * s * z * _sdf)))
+                    p.drawRect(int(round((g.x() - ox) * s * z + (g.width() * s * z - _sw) / 2.0)),
+                               int(round((g.y() - oy) * s * z + (g.height() * s * z - _sh) / 2.0)),
+                               _sw, _sh)
                     p.setPen(QColor(0, 229, 255, 240))
                     p.drawText(24, b.h - 24, "Anordnen: " + self.vr_arrange_label(sel)
-                               + "  (Leertaste = naechstes, Pfeile = verschieben, Bild auf/ab = Groesse)")
+                               + "  (Leertaste = naechstes, Pfeile = verschieben, Bild auf/ab = Groesse, Einfg/Entf = Abstand)")
                 except Exception:
                     pass
         if show_frame:
@@ -8213,8 +8273,22 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             p.drawText(38, ty, zeile1)
             p.drawText(38, ty + lh, zeile2)
         p.end()
+        # 0.4.1.1: Leere Leinwand (keine Overlays, kein Rahmen/Diagnose/
+        # Anordnen) nur EINMAL veroeffentlichen und dann das Schreiben
+        # aussetzen - jeder publish() kopiert die komplette Leinwand in das
+        # Shared Memory; ohne Overlays waere das reine Last ohne Inhalt.
+        if drawn == 0 and not show_frame and not debug and not getattr(self, "_vr_arrange", False):
+            if getattr(self, "_vr_idle_pub", False):
+                return
+            self._vr_idle_pub = True
+        else:
+            self._vr_idle_pub = False
         prev_last = getattr(b, "_last", now)  # 0.4.0.4: fuer die Altersangabe
-        published = b.publish(bytes(canvas.constBits()), now)
+        # 0.4.1.1: constBits() direkt uebergeben (memoryview) statt eine
+        # zusaetzliche ~20-MB-Byte-Kopie pro Bild; Rueckfall nur bei Fehler.
+        published = b.publish(canvas.constBits(), now)
+        if not published:
+            published = b.publish(bytes(canvas.constBits()), now)
         b._pub_ok = published  # 0.4.0.5: fuer die Diagnose-Anzeige auf der Tafel
         if debug:
             try:
@@ -8871,6 +8945,8 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 ("arr_grow", 0x21, lambda: self.vr_arrange_scale(0.1)),
                 ("arr_shrink", 0x22, lambda: self.vr_arrange_scale(-0.1)),
                 ("arr_next", 0x20, self.vr_arrange_next),
+                ("arr_near", 0x2D, lambda: self.vr_arrange_depth(0.1)),
+                ("arr_far", 0x2E, lambda: self.vr_arrange_depth(-0.1)),
             ):
                 down = self._vk_down(vk)
                 was_down = self.global_hotkey_state.get(key, False)
