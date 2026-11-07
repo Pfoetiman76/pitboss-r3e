@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QApplication, QFileDialog, QGroupBox, QGridLayout, QHBoxLayout, QLabel,
     QLineEdit, QMainWindow, QMessageBox, QPushButton, QTableWidget, QComboBox,
     QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget, QTabWidget, QFrame,
-    QCheckBox, QSpinBox, QProgressDialog, QSizeGrip, QDialog, QDialogButtonBox, QScrollArea
+    QCheckBox, QSpinBox, QProgressDialog, QSizeGrip, QDialog, QDialogButtonBox, QScrollArea, QSlider
 )
 
 import ctypes
@@ -31,7 +31,7 @@ import ai_providers  # 0.2.1: optionale KI-Anbieter fuer den Live-Coach
 from raceroom_sm import R3EReader  # RaceRoom Shared Memory ($R3E)
 import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
-from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath
+from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
 APP_VERSION = "0.4.0.0 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
@@ -1922,6 +1922,27 @@ class OverlayStyleMixin:
             om.addAction(label, lambda v=val: self.set_ui_opacity(v))
         om.addSeparator()
         om.addAction("Regler … (Alt+Mausrad: 5-%-Schritte)", self._opacity_dialog)
+        # 0.4.0.0: Pro Overlay einstellen, ob es in die VR gespiegelt wird
+        # (VR-Spiegel "Monitor 1:1"). Die Einstellung landet in vr_overlay.json
+        # und gilt fuer alle Overlays dieser Art.
+        vr_a = menu.addAction("In VR zeigen")
+        vr_a.setCheckable(True)
+        try:
+            _cfg_vr = vr_overlay.load_config(VR_CONFIG_PATH)
+            vr_a.setChecked(type(self).__name__ not in vr_overlay.hidden_classes(_cfg_vr))
+        except Exception:
+            vr_a.setChecked(True)
+        def _toggle_vr_show(on, _cls=type(self).__name__):
+            try:
+                lst = set(vr_overlay.load_config(VR_CONFIG_PATH).get("vr_hidden", []) or [])
+                if on:
+                    lst.discard(_cls)
+                else:
+                    lst.add(_cls)
+                vr_overlay.save_config(VR_CONFIG_PATH, {"vr_hidden": sorted(lst)})
+            except Exception:
+                pass
+        vr_a.toggled.connect(_toggle_vr_show)
         menu.exec(event.globalPos())
 
     # ---- 0.4.9.8: Groesse per Ziehen veraendern -------------------------
@@ -5583,16 +5604,18 @@ class Main(QMainWindow):
         self.act_blindspot_flip.setCheckable(True)
         self.act_blindspot_flip.setChecked(BlindSpotOverlayWindow._load_flip())
         self.act_blindspot_flip.toggled.connect(self.set_blindspot_flip)
-        # 0.4.0.0: VR-Tafel. Der OpenXR-API-Layer im Spiel (Pre-Release
-        # poc-vr-layer) liest das Bild aus dem PBVR-Shared-Memory und reicht
-        # es als Quad in die VR ein. Die Tafel spiegelt den Toter-Winkel-
-        # Zustand live (Hauptmenue und Cockpit), funktioniert aber auch ohne
-        # geoeffnetes Desktop-Overlay.
-        self.act_vr_overlay = _ov.addAction("VR-Overlay (Toter Winkel)", self.toggle_vr_overlay)
+        # 0.4.0.0: VR-Spiegel "Monitor 1:1" (PBVR v2). Der OpenXR-API-Layer
+        # im Spiel (Pre-Release poc-vr-layer) liest die Leinwand aus dem
+        # PBVR-Shared-Memory und reicht sie als Quad in die VR ein. Die
+        # Leinwand entspricht der Bildschirmflaeche: jedes offene Desktop-
+        # Overlay erscheint exakt an seiner Monitor-Position in der VR -
+        # verschieben/skalieren/Deckkraft/zumachen wirkt sofort.
+        self.act_vr_overlay = _ov.addAction("VR-Overlay (Monitor 1:1)", self.toggle_vr_overlay)
         self.act_vr_overlay.setCheckable(True)
         self.act_vr_frame = _ov.addAction("VR: Leinwand-Rahmen zeigen", self.set_vr_frame_visible)
         self.act_vr_frame.setCheckable(True)
         self.act_vr_frame.setChecked(bool(vr_overlay.load_config(VR_CONFIG_PATH).get("show_frame", True)))
+        _ov.addAction("VR: Einstellungen …", self.open_vr_settings)
         _ov_toggle("Bremstemperaturen (inkl. Verschleiß-Schätzung)", self.toggle_brake_overlay, "brake_overlay_window")
         _ov_toggle("Kraftstoff", self.toggle_fuel_overlay, "fuel_overlay_window")
         _ov_toggle("Kurven-Namen", self.toggle_corner_name_overlay, "corner_name_overlay_window")  # 0.2.41: ins Overlays-Menue verschoben (war unter Mehr)
@@ -7640,28 +7663,19 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         win = getattr(self, "blindspot_overlay_window", None)
         if win is not None:
             win.set_flip(on)
-        vrb = getattr(self, "vr_board", None)  # 0.4.0.0: VR-Tafel spiegelt die Einstellung
-        if vrb is not None and getattr(vrb, "tracker", None) is not None:
-            vrb.tracker.flip = on
-        else:
-            try:
-                EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-                BLINDSPOT_CONFIG_PATH.write_text(json.dumps({"flip": on}), encoding="utf-8")
-            except Exception:
-                pass
+        try:
+            EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+            BLINDSPOT_CONFIG_PATH.write_text(json.dumps({"flip": on}), encoding="utf-8")
+        except Exception:
+            pass
         try:
             self.status.setText("Toter Winkel: Seiten " + ("gespiegelt." if on else "normal."))
         except Exception:
             pass
 
-    def _vr_save_config(self, enabled=None, show_frame=None):
-        """0.4.0.0: VR-Overlay-Konfiguration (aktiv/Leinwand-Rahmen) merken."""
+    def _vr_save_config(self, **updates):
+        """0.4.0.0: VR-Overlay-Konfiguration (aktiv/Rahmen/Regler) merken."""
         try:
-            updates = {}
-            if enabled is not None:
-                updates["enabled"] = bool(enabled)
-            if show_frame is not None:
-                updates["show_frame"] = bool(show_frame)
             vr_overlay.save_config(VR_CONFIG_PATH, updates)
         except Exception:
             pass
@@ -7673,19 +7687,21 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             return True
 
     def toggle_vr_overlay(self):  # 0.4.0.0
-        """VR-Tafel an/aus: legt das PBVR-Shared-Memory an bzw. gibt es frei.
-        Die DLL im Spiel zeigt ohne PitBoss ihr Testmuster (wandernder Balken),
-        mit PitBoss den Toter-Winkel-Zustand. Kein Fenster - der Haken im
-        Menue spiegelt nur den Zustand des Boards."""
+        """VR-Spiegel an/aus (PBVR v2, "Monitor 1:1"): legt das Shared Memory
+        in Bildschirmgroesse an bzw. gibt es frei. Die DLL im Spiel zeigt
+        ohne PitBoss ihr Testmuster (wandernder Balken), mit PitBoss die
+        gespiegelten Desktop-Overlays. Kein eigenes Fenster - der Haken im
+        Menue spiegelt nur den Zustand des Spiegels."""
         if self.vr_board is None:
-            b = vr_overlay.VRBoard(show_frame=self._vr_show_frame(),
-                                   flip=BlindSpotOverlayWindow._load_flip())
+            scr = QApplication.primaryScreen().geometry()
+            cw, ch, _s = vr_overlay.canvas_size(scr.width(), scr.height())
+            b = vr_overlay.VRMirror(cw, ch, vr_overlay.load_config(VR_CONFIG_PATH))
             if not b.start():
-                self.log.append("VR-Overlay: Shared Memory konnte nicht angelegt werden - VR-Tafel nicht verfuegbar.")
+                self.log.append("VR-Overlay: Shared Memory konnte nicht angelegt werden - VR-Spiegel nicht verfuegbar.")
                 return
             self.vr_board = b
             self._vr_save_config(enabled=True)
-            self.log.append("VR-Overlay aktiv: Toter-Winkel-Tafel wird an die VR gesendet (VR-Layer im Spiel noetig, Registry-Wert 0).")
+            self.log.append(f"VR-Overlay aktiv: Monitor wird 1:1 in die VR gespiegelt ({cw}x{ch} Pixel, max. 20 Bilder/s). Fenster verschieben/skalieren/Deckkraft/zumachen wirkt sofort in der VR.")
         else:
             self.vr_board.stop()
             self.vr_board = None
@@ -7694,18 +7710,127 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         self._sync_overlay_menu_checks()
 
     def set_vr_frame_visible(self, on):  # 0.4.0.0
-        """Leinwand-Rahmen der VR-Tafel ein/aus (Marcels Wunsch: zeigt, was in
-        der VR sichtbar ist; abschaltbar, damit die Tafel unauffaellig bleibt)."""
+        """Leinwand-Rahmen des VR-Spiegels ein/aus (zeigt, was in der VR
+        sichtbar ist; abschaltbar, damit die Tafel unauffaellig bleibt)."""
         on = bool(on)
         self._vr_save_config(show_frame=on)
         b = getattr(self, "vr_board", None)
         if b is not None:
             b.show_frame = on
-            b.redraw(force=True)
         try:
             self.status.setText("VR: Leinwand-Rahmen " + ("sichtbar." if on else "ausgeblendet."))
         except Exception:
             pass
+
+    def open_vr_settings(self):  # 0.4.0.0
+        """Justage-Dialog: VR-Regler fuer Groesse, Hoehe, Abstand und
+        Deckkraft der Tafel in der Brille. Aenderungen wirken sofort
+        (ab dem naechsten Spiegel-Bild) und werden gespeichert."""
+        cfg = vr_overlay.load_config(VR_CONFIG_PATH)
+        dlg = QDialog(self)
+        dlg.setWindowTitle("VR-Overlay: Einstellungen")
+        lay = QVBoxLayout(dlg)
+        hint = QLabel("Die VR-Tafel spiegelt den Monitor 1:1. Hier stellst du ein, wie sie in der Brille sitzt.\nAenderungen wirken sofort und werden gespeichert.")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+
+        def _row(label, lo, hi, val, fmt):
+            row = QHBoxLayout()
+            lab = QLabel(label)
+            lab.setMinimumWidth(110)
+            val_lbl = QLabel(fmt(val))
+            val_lbl.setMinimumWidth(52)
+            sl = QSlider(Qt.Horizontal)
+            sl.setRange(lo, hi)
+            sl.setValue(int(val))
+            row.addWidget(lab)
+            row.addWidget(sl, 1)
+            row.addWidget(val_lbl)
+            lay.addLayout(row)
+            return sl, val_lbl, fmt
+
+        w_sl, w_lbl, w_fmt = _row("Breite", 8, 30, round(float(cfg.get("vr_width_m", 1.6)) * 10), lambda v: f"{v/10:.1f} m")
+        h_sl, h_lbl, h_fmt = _row("Höhe", -5, 15, round(float(cfg.get("vr_height_m", 0.35)) * 10), lambda v: f"{v/10:.1f} m")
+        d_sl, d_lbl, d_fmt = _row("Abstand", 6, 30, round(float(cfg.get("vr_dist_m", 1.2)) * 10), lambda v: f"{v/10:.1f} m")
+        o_sl, o_lbl, o_fmt = _row("Deckkraft", 30, 100, int(cfg.get("vr_opacity", 100)), lambda v: f"{v} %")
+
+        def _changed(_v=None):
+            self._vr_save_config(vr_width_m=w_sl.value() / 10.0,
+                                 vr_height_m=h_sl.value() / 10.0,
+                                 vr_dist_m=d_sl.value() / 10.0,
+                                 vr_opacity=o_sl.value())
+            w_lbl.setText(w_fmt(w_sl.value()))
+            h_lbl.setText(h_fmt(h_sl.value()))
+            d_lbl.setText(d_fmt(d_sl.value()))
+            o_lbl.setText(o_fmt(o_sl.value()))
+            b = getattr(self, "vr_board", None)
+            if b is not None:
+                b.update_pose(vr_overlay.load_config(VR_CONFIG_PATH))
+
+        w_sl.valueChanged.connect(_changed)
+        h_sl.valueChanged.connect(_changed)
+        d_sl.valueChanged.connect(_changed)
+        o_sl.valueChanged.connect(_changed)
+
+        hint2 = QLabel("Tipp: Jedes Overlay hat im Rechtsklick-Menue einen Haken \"In VR zeigen\".")
+        hint2.setStyleSheet("color: #888;")
+        lay.addWidget(hint2)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok)
+        bb.accepted.connect(dlg.accept)
+        lay.addWidget(bb)
+        dlg.resize(430, 300)
+        dlg.exec()
+
+    def _vr_mirror_tick(self):  # 0.4.0.0: Monitor 1:1 in die VR spiegeln
+        """Sammtliche offenen Desktop-Overlays per QPainter auf die Leinwand
+        komponieren (C++-schnell, 20 Hz gedrosselt) und in das PBVR-Shared-
+        Memory schreiben. Der Layer aktualisiert nur bei neuem frame-Zaehler."""
+        import time as _t
+        b = getattr(self, "vr_board", None)
+        if b is None:
+            return
+        now = _t.monotonic()
+        if b.too_soon(now):
+            return
+        scr = QApplication.primaryScreen().geometry()
+        cw, ch, s = vr_overlay.canvas_size(scr.width(), scr.height())
+        if cw != b.w or ch != b.h:
+            # Aufloesung geaendert: Leinwand neu anlegen (der Layer baut die
+            # Swapchain selbst neu auf, sobald die Header-Masse wechseln).
+            b.stop()
+            b2 = vr_overlay.VRMirror(cw, ch, vr_overlay.load_config(VR_CONFIG_PATH))
+            if not b2.start():
+                self.vr_board = None
+                return
+            self.vr_board = b = b2
+        hidden = vr_overlay.hidden_classes(vr_overlay.load_config(VR_CONFIG_PATH))
+        canvas = QImage(b.w, b.h, QImage.Format_ARGB32)
+        canvas.fill(Qt.transparent)
+        p = QPainter(canvas)
+        p.setOpacity(getattr(b, "opacity", 1.0))
+        ox, oy = scr.x(), scr.y()
+        for w in self.all_overlay_windows():
+            try:
+                if not w.isVisible() or type(w).__name__ in hidden:
+                    continue
+                g = w.frameGeometry()
+                if g.width() <= 0 or g.height() <= 0:
+                    continue
+                img = w.grab().toImage()
+                if s != 1.0:
+                    img = img.scaled(max(1, int(round(g.width() * s))),
+                                     max(1, int(round(g.height() * s))),
+                                     Qt.IgnoreAspectRatio, Qt.FastTransformation)
+                p.drawImage(int(round((g.x() - ox) * s)),
+                            int(round((g.y() - oy) * s)), img)
+            except Exception:
+                continue
+        if getattr(b, "show_frame", True):
+            p.setOpacity(1.0)
+            p.setPen(QPen(QColor(208, 208, 208, 170), 3, Qt.DashLine))
+            p.drawRect(0, 0, b.w - 1, b.h - 1)
+        p.end()
+        b.publish(bytes(canvas.constBits()), now)
 
     def all_overlay_windows(self):
         """0.4.9.1: alle Overlay-Fenster, die es aktuell gibt."""
@@ -7859,10 +7984,8 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             _w = getattr(self, _a, None)
             if _w is not None and _w.isVisible():
                 _w.update_from_main(self)
-        # 0.4.0.0: VR-Tafel - Toter-Winkel-Zustand an die VR spiegeln
-        _vrb = getattr(self, "vr_board", None)
-        if _vrb is not None:
-            _vrb.tick(self)
+        # 0.4.0.0: VR-Spiegel - Monitor 1:1 in die VR (max. 20 Hz)
+        self._vr_mirror_tick()
 
     def set_dash_card(self, key: str, value: str):
         if hasattr(self, "dash_cards") and key in self.dash_cards:
