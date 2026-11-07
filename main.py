@@ -33,7 +33,7 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.0.1 Beta"
+APP_VERSION = "0.4.0.2 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -7804,7 +7804,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 return
             self.vr_board = b = b2
         hidden = vr_overlay.hidden_classes(vr_overlay.load_config(VR_CONFIG_PATH))
-        canvas = QImage(b.w, b.h, QImage.Format_ARGB32)
+        canvas = QImage(b.w, b.h, QImage.Format_ARGB32_Premultiplied)
         canvas.fill(Qt.transparent)
         p = QPainter(canvas)
         p.setOpacity(getattr(b, "opacity", 1.0))
