@@ -33,7 +33,7 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.2.5 Beta"
+APP_VERSION = "0.4.2.6 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -8131,7 +8131,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 pass
         try:
             if on:
-                self.log.append("VR-Anordnen aktiv: Strg+Alt+Pfeile = verschieben (zusaetzlich Shift = fein), Strg+Alt+Bild auf/ab = Groesse, Strg+Alt+Einfg/Entf = Abstand, Strg+Alt+Pos1/Ende = vertikal kippen, Strg+Alt+Komma/Punkt = horizontal kippen, Strg+Alt+Leertaste = naechstes Overlay, Strg+Alt+1..9 = Overlay direkt auswählen, " + str(self.hotkey_config.get("vr_arrange", "F4")) + " = Modus aus.")
+                self.log.append("VR-Anordnen aktiv: Strg+Alt+Pfeile = verschieben (zusaetzlich Shift = fein), Strg+Alt+Bild auf/ab = Groesse, Strg+Alt+Ü = näher, Strg+Alt+Ä = weiter weg, Strg+Alt+Pos1/Ende = vertikal kippen, Strg+Alt+Komma/Punkt = horizontal kippen, Strg+Alt+Leertaste = naechstes Overlay, Strg+Alt+1..9 = Overlay direkt auswählen, " + str(self.hotkey_config.get("vr_arrange", "F4")) + " = Modus aus.")
             else:
                 self.log.append("VR-Anordnen aus.")
         except Exception:
@@ -8473,7 +8473,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 # 0.4.2.5: Hinweistext auf der Tafel auf die Strg+Alt-Belegung
                 # umgestellt (Spiel belegt die Nackttasten fuer die Kamera).
                 p.drawText(24, ch - 24, "Anordnen: " + self.vr_arrange_label(sel)
-                           + "  (Strg+Alt+Pfeile = verschieben (Shift = fein), Strg+Alt+Bild auf/ab = Groesse, Strg+Alt+Einfg/Entf = Abstand, Strg+Alt+Pos1/Ende = vertikal kippen, Strg+Alt+Komma/Punkt = horizontal kippen, Strg+Alt+Leertaste = naechstes)")
+                           + "  (Strg+Alt+Pfeile = verschieben (Shift = fein), Strg+Alt+Bild auf/ab = Groesse, Strg+Alt+Ü = näher, Strg+Alt+Ä = weiter weg, Strg+Alt+Pos1/Ende = vertikal kippen, Strg+Alt+Komma/Punkt = horizontal kippen, Strg+Alt+Leertaste = naechstes)")
             p.end()
             ptr = canvas.constBits()
             bpl = canvas.bytesPerLine()
@@ -9233,8 +9233,8 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                     ("arr_left", 0x25, None), ("arr_right", 0x27, None),
                     ("arr_up", 0x26, None), ("arr_down", 0x28, None),
                     ("arr_grow", 0x21, None), ("arr_shrink", 0x22, None),
-                    ("arr_next", 0x20, None), ("arr_near", 0x2D, None),
-                    ("arr_far", 0x2E, None), ("arr_pitchup", 0x24, None),
+                    ("arr_next", 0x20, None), ("arr_near", 0xBA, None),
+                    ("arr_far", 0xDE, None), ("arr_pitchup", 0x24, None),
                     ("arr_pitchdown", 0x23, None), ("arr_yawleft", 0xBC, None),
                     ("arr_yawright", 0xBE, None),
                 ):
@@ -9249,8 +9249,10 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 ("arr_grow", 0x21, lambda: self.vr_arrange_scale(0.1)),
                 ("arr_shrink", 0x22, lambda: self.vr_arrange_scale(-0.1)),
                 ("arr_next", 0x20, self.vr_arrange_next),
-                ("arr_near", 0x2D, lambda: self.vr_arrange_depth(0.1)),
-                ("arr_far", 0x2E, lambda: self.vr_arrange_depth(-0.1)),
+                # 0.4.2.6: Abstand auf Strg+Alt+Ue (0xBA) / Strg+Alt+Ae (0xDE)
+                # umgezogen (deutsche Tastatur, Marcel-Wunsch; vorher Einfg/Entf).
+                ("arr_near", 0xBA, lambda: self.vr_arrange_depth(0.1)),
+                ("arr_far", 0xDE, lambda: self.vr_arrange_depth(-0.1)),
                 # 0.4.2.0: Kippung (wie OpenKneeboard), 5-Grad-Schritte
                 ("arr_pitchup", 0x24, lambda: self.vr_arrange_tilt(5.0, 0.0)),
                 ("arr_pitchdown", 0x23, lambda: self.vr_arrange_tilt(-5.0, 0.0)),
