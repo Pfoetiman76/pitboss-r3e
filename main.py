@@ -33,7 +33,7 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.2.7 Beta"
+APP_VERSION = "0.4.2.8 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -8156,7 +8156,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         dlg.setWindowTitle("Overlays verwalten")
         dlg.setModal(False)
         lay = QVBoxLayout(dlg)
-        hint = QLabel("Haken setzen oder entfernen - dieses Fenster bleibt offen, bis du es selbst schließt. Änderungen wirken sofort (auch in der VR).\nNeu (0.4.2.0): Modus je Overlay (Beide / Monitor / VR) und Kipp-Buttons H−/H+/V−/V+ (je 5 Grad).")
+        hint = QLabel("Haken setzen oder entfernen - dieses Fenster bleibt offen, bis du es selbst schließt. Änderungen wirken sofort (auch in der VR).\nModus je Overlay: Beide / Monitor / VR. Position, Größe, Abstand und Kippung stellst du über die Anordnen-Tasten ein (F4 bzw. Strg+Alt+…).")
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#888;")
         lay.addWidget(hint)
@@ -8175,30 +8175,11 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             _mk(label, slot, self._ov_toggle_acts.get(attr))
         # 0.4.1.0: Position & Groesse je Overlay - am Monitor bedienbar, auch
         # wenn das Spiel den Desktop ueberdeckt; wirkt sofort in der VR.
-        pos_sep = QLabel("Position, Größe, Abstand, Modus & Kippung (wirken sofort in der VR)")
+        # 0.4.2.8: Justage-Buttons entfernt (Marcel-Wunsch) - alles per
+        # Anordnen-Hotkeys; hier bleibt nur der Anzeige-Modus je Overlay.
+        pos_sep = QLabel("Anzeige-Modus je Overlay (Beide / Monitor / VR)")
         pos_sep.setStyleSheet("color:#888;font-weight:bold;")
         lay.addWidget(pos_sep)
-
-        def _mgr_mv(a, dx, dy):
-            w = getattr(self, a, None)
-            if w is None or not w.isVisible():
-                return
-            try:
-                scr = QApplication.primaryScreen().availableGeometry()
-                nx = max(scr.left(), min(int(w.x() + dx), scr.right() - w.width()))
-                ny = max(scr.top(), min(int(w.y() + dy), scr.bottom() - w.height()))
-                w.move(nx, ny)
-            except Exception:
-                pass
-
-        def _mgr_sc(a, d):
-            w = getattr(self, a, None)
-            if w is None or not w.isVisible() or not hasattr(w, "set_ui_scale"):
-                return
-            try:
-                w.set_ui_scale(max(0.5, min(3.0, float(getattr(w, "ov_scale", 1.0)) + d)))
-            except Exception:
-                pass
 
         for attr, (label, _slot) in (getattr(self, "_ov_toggle_slots", {}) or {}).items():
             row = QHBoxLayout()
@@ -8218,23 +8199,6 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 lambda idx, a=attr: self.set_overlay_mode(a, ("both", "monitor", "vr")[idx]))
             row.addWidget(combo)
             row.addStretch(1)
-            for txt, slot in (("◀", lambda a=attr: _mgr_mv(a, -32, 0)),
-                              ("▶", lambda a=attr: _mgr_mv(a, 32, 0)),
-                              ("▲", lambda a=attr: _mgr_mv(a, 0, -32)),
-                              ("▼", lambda a=attr: _mgr_mv(a, 0, 32)),
-                              ("−", lambda a=attr: _mgr_sc(a, -0.1)),
-                              ("+", lambda a=attr: _mgr_sc(a, 0.1)),
-                              ("Nah", lambda a=attr: self.vr_depth_step(a, 0.1)),
-                              ("Fern", lambda a=attr: self.vr_depth_step(a, -0.1)),
-                              ("H−", lambda a=attr: self.vr_tilt_step(a, 0.0, -5.0)),
-                              ("H+", lambda a=attr: self.vr_tilt_step(a, 0.0, 5.0)),
-                              ("V−", lambda a=attr: self.vr_tilt_step(a, -5.0, 0.0)),
-                              ("V+", lambda a=attr: self.vr_tilt_step(a, 5.0, 0.0))):
-                btn = QPushButton(txt)
-                btn.setFixedWidth(34)
-                btn.setToolTip("Nur bei offenem Overlay wirksam")
-                btn.clicked.connect(slot)
-                row.addWidget(btn)
             lay.addLayout(row)
         sep = QLabel("VR-Spiegel")
         sep.setStyleSheet("color:#888;font-weight:bold;")
@@ -8251,7 +8215,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         lay.addWidget(bb)
         dlg.finished.connect(lambda _r=None: setattr(self, "_ov_mgr", None))
         self._ov_mgr = dlg
-        dlg.resize(360, 680)
+        dlg.resize(360, 520)
         dlg.show(); dlg.raise_(); dlg.activateWindow()
 
     def open_vr_settings(self):  # 0.4.0.0
