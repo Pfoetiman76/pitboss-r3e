@@ -33,7 +33,7 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.2.8 Beta"
+APP_VERSION = "0.4.2.9 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -5732,6 +5732,7 @@ class Main(QMainWindow):
         self.act_cue_gas.toggled.connect(lambda on: setattr(self.brake_coach, "say_gas", bool(on)))
         _coach.addSeparator()
         _coach.addAction("Ansage-Vorlauf …", self.set_coach_lead_all)
+        _coach.addAction("Sprachausgabe-Lautstärke …", self.set_tts_volume)  # 0.4.2.9
         self.btn_coach.setMenu(_coach)
 
         self.btn_more = QToolButton()
@@ -7708,6 +7709,60 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                         + ", ".join(f"{n} {bc.get_lead(k):.2f}s" for k, n in specs)
                         + " (exports/coach_timing.json).")
         self.status.setText("Ansage-Vorlauf aktualisiert.")
+
+    def set_tts_volume(self):  # 0.4.2.9
+        """Sprachausgabe der Coaches lauter/leiser. Piper: echte
+        WAV-Verstaerkung bis 400 % (der alte Volume-Parameter wirkte bei
+        Piper nicht - Ursache fuer die leisen Ansagen); SAPI/PowerShell:
+        Stimmlautstaerke (max. 100 %). Gespeichert in tts_config.json."""
+        from PySide6.QtWidgets import (QDialog, QSlider, QVBoxLayout, QHBoxLayout,
+                                       QLabel, QDialogButtonBox, QWidget, QPushButton)
+        from PySide6.QtCore import Qt as _Qt
+        if not self.tts.is_available():
+            QMessageBox.information(
+                self, "Sprachausgabe",
+                "Keine Sprachausgabe verf\u00fcgbar (Piper/SAPI pr\u00fcfen).")
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Sprachausgabe-Lautstärke")
+        lay = QVBoxLayout(dlg)
+        backend = self.tts.backend()
+        intro = QLabel("Regler bewegen = sofort wirksam, auch bei der Testansage. 100 % = unver\u00e4ndert.\n"
+                       "\u00dcber 100 % verst\u00e4rkt PitBoss die Coach-Ansagen (sehr hohe Werte k\u00f6nnen leicht \u00fcbersteuern).\n"
+                       "Wird automatisch gespeichert. Backend: " + backend)
+        intro.setWordWrap(True)
+        lay.addWidget(intro)
+        sld = QSlider(_Qt.Horizontal)
+        sld.setMinimum(20)
+        sld.setMaximum(400)
+        sld.setSingleStep(10)
+        sld.setPageStep(50)
+        sld.setValue(int(getattr(self.tts, "gain", 100)))
+        val = QLabel(f"{sld.value()} %")
+        val.setMinimumWidth(56)
+        row = QWidget(); rl = QHBoxLayout(row); rl.setContentsMargins(0, 0, 0, 0)
+        rl.addWidget(sld, 1); rl.addWidget(val)
+        lay.addWidget(row)
+        def _apply(v):
+            self.tts.set_gain(int(v))
+            val.setText(f"{int(v)} %")
+        sld.valueChanged.connect(_apply)
+        btn_test = QPushButton("Testansage")
+        def _test():
+            self.tts.speak(
+                "Sprachausgabe Test. Lautstärke " + str(int(getattr(self.tts, "gain", 100)))
+                + " Prozent.", interrupt=True)
+        btn_test.clicked.connect(_test)
+        lay.addWidget(btn_test)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok)
+        bb.accepted.connect(dlg.accept)
+        lay.addWidget(bb)
+        old = int(getattr(self.tts, "gain", 100))
+        dlg.exec()
+        g = int(getattr(self.tts, "gain", 100))
+        if g != old:
+            self.log.append(f"Sprachausgabe-Lautstärke: {g} %.")
+            self.status.setText("Sprachausgabe-Lautstärke angepasst.")
 
     def calibrate_brake_model(self):
         """0.4.9.2: Modell an einen real beobachteten Verschleiss anpassen."""

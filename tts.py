@@ -15,6 +15,9 @@ Backends (in dieser Prioritaet)
 4. Kein Backend (z.B. Nicht-Windows / nichts konfiguriert) -> speak() ist No-Op.
 
 Rate: -10..10. Volume: 0..100. (Piper: Rate/Volume systembedingt ohne Wirkung.)
+0.4.2.9: gain 20..400 % - echte WAV-Verstaerkung fuer Piper-Ansagen (ueber
+100 % lauter, darunter leiser, mit Begrenzung gegen Uebersteuern). Bei
+SAPI/PowerShell ist die wirksame Lautstaerke volume*gain/100, gedeckelt auf 100.
 """
 
 from __future__ import annotations
@@ -66,6 +69,7 @@ class SpeechEngine:
         self.voice_name = ""
         self.rate = 0
         self.volume = 100
+        self.gain = 100                # 0.4.2.9: Verstaerkung 20..400 %
         self.auto_read = True           # 0.4.7.4: Auto-Vorlesen standardmaessig an
         # Piper
         self.piper_exe = ""
@@ -175,6 +179,7 @@ class SpeechEngine:
             self.voice_name = cfg.get("voice", "") or ""
             self.rate = int(cfg.get("rate", 0))
             self.volume = int(cfg.get("volume", 100))
+            self.gain = max(20, min(400, int(cfg.get("gain", 100))))
             self.auto_read = bool(cfg.get("auto_read", False))
             self.piper_exe = cfg.get("piper_exe", "") or ""
             self.piper_model = cfg.get("piper_model", "") or ""
@@ -187,7 +192,8 @@ class SpeechEngine:
             tmp = self.config_path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump({"voice": self.voice_name, "rate": self.rate,
-                           "volume": self.volume, "auto_read": self.auto_read,
+                           "volume": self.volume, "gain": self.gain,
+                           "auto_read": self.auto_read,
                            "piper_exe": self.piper_exe, "piper_model": self.piper_model},
                           fh, indent=2)
             os.replace(tmp, self.config_path)
@@ -202,6 +208,44 @@ class SpeechEngine:
     def set_volume(self, value: int) -> None:
         self.volume = max(0, min(100, int(value)))
         self._save_config()
+
+    def set_gain(self, value: int) -> None:
+        """0.4.2.9: Verstaerkung 20..400 %. Piper: skaliert die WAV-Amplitude
+        vor dem Abspielen; SAPI/PowerShell: wirkt ueber volume*gain/100."""
+        self.gain = max(20, min(400, int(value)))
+        self._save_config()
+
+    def _apply_gain(self, path: str, out=None) -> str:
+        """0.4.2.9: Skaliert die Amplitude einer 16-bit-WAV auf den gain-Faktor
+        (mit Begrenzung auf +/-32767 gegen hartes Uebersteuern). out=None ->
+        Datei wird ersetzt (Live-Ansagen); sonst wird eine NEUE Datei
+        geschrieben und das Original unangetastet gelassen (Clip-Cache).
+        Liefert den Pfad der abzuspielenden Datei zurueck (immer gueltig)."""
+        g = int(getattr(self, "gain", 100))
+        if g == 100 or not path or not os.path.isfile(path):
+            return path
+        factor = g / 100.0
+        import wave
+        import array
+        try:
+            with wave.open(path, "rb") as w:
+                params = w.getparams()
+                frames = w.readframes(w.getnframes())
+            if params.sampwidth != 2 or not frames:
+                return path          # nur 16-bit (Piper) verstaerken
+            a = array.array("h")
+            a.frombytes(frames)
+            b = array.array(
+                "h",
+                (max(-32768, min(32767, int(round(x * factor)))) for x in a),
+            )
+            target = out if out else path
+            with wave.open(target, "wb") as w:
+                w.setparams(params)
+                w.writeframes(b.tobytes())
+            return target
+        except Exception:
+            return path
 
     def set_auto_read(self, value: bool) -> None:
         self.auto_read = bool(value)
@@ -316,6 +360,7 @@ class SpeechEngine:
                 if gen != self._piper_gen:            # veraltet -> nicht abspielen
                     return
             if winsound is not None:
+                self._apply_gain(wav)   # 0.4.2.9: Verstaerkung (gain), in-place
                 winsound.PlaySound(wav, winsound.SND_FILENAME | winsound.SND_ASYNC)
         except Exception:
             return
@@ -365,7 +410,10 @@ class SpeechEngine:
         wav = entry[0] if entry else None
         if wav and winsound is not None and os.path.isfile(wav):
             try:
-                winsound.PlaySound(wav, winsound.SND_FILENAME | winsound.SND_ASYNC)
+                # 0.4.2.9: Verstaerkung auf einer Kopie - das Original im
+                # Clip-Cache bleibt unveraendert (gain aendert sich live).
+                play = self._apply_gain(wav, out=wav + ".gain.wav")
+                winsound.PlaySound(play, winsound.SND_FILENAME | winsound.SND_ASYNC)
                 return True
             except Exception:
                 pass
@@ -375,7 +423,8 @@ class SpeechEngine:
     def _sapi_speak(self, text: str, interrupt: bool) -> bool:
         try:
             self._sapi.Rate = self.rate
-            self._sapi.Volume = self.volume
+            self._sapi.Volume = max(0, min(100, int(round(
+                self.volume * getattr(self, "gain", 100) / 100.0))))
             flags = _SVSFlagsAsync | (_SVSFPurgeBeforeSpeak if interrupt else 0)
             self._sapi.Speak(text, flags)
             return True
@@ -405,7 +454,8 @@ class SpeechEngine:
         voice_sel = f"$s.SelectVoice('{self.voice_name}');" if self.voice_name else ""
         script = ("Add-Type -AssemblyName System.Speech;"
                   "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer;"
-                  f"{voice_sel}$s.Rate={self.rate};$s.Volume={self.volume};"
+                  f"{voice_sel}$s.Rate={self.rate};$s.Volume="
+                  f"{max(0, min(100, int(round(self.volume * getattr(self, 'gain', 100) / 100.0))))};"
                   f"$s.Speak('{safe}')")
         try:
             self._ps_proc = subprocess.Popen(
