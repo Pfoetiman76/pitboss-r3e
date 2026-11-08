@@ -110,7 +110,15 @@ jobs:
           Get-ChildItem piper
 
       - name: PyInstaller-Build
-        run: pyinstaller installer/pitboss_r3e.spec --noconfirm
+        shell: pwsh
+        run: |
+          pyinstaller installer/pitboss_r3e.spec --noconfirm
+          if ($LASTEXITCODE -ne 0) { throw "PyInstaller fehlgeschlagen (Exit $LASTEXITCODE)" }
+          # 0.4.2.10-CI Fail-Loud: Der Voll-Installer braucht die Piper-Stimme im
+          # Build. PyInstaller 6 legt Datendateien unter _internal ab.
+          if (-not (Test-Path 'dist/PitBossR3E/_internal/piper/piper.exe')) {
+            throw "piper.exe fehlt in dist/PitBossR3E/_internal/piper - Piper-Schritt oder Spec pruefen!"
+          }
 
       # 0.2.6: Groesse des Builds dokumentieren (Verschlanke-Kontrolle)
       - name: Dist-Groesse ausgeben
@@ -131,12 +139,34 @@ jobs:
       - name: Inno Setup installieren
         run: choco install innosetup -y --no-progress
 
-      - name: Installer bauen (Voll + Lite)
+      # 0.4.2.10-CI: Voll und Lite GETRENNT bauen. Frueher scheiterte der
+      # Voll-Bau still (falscher piper-Pfad in setup.iss), der Lite-Bau
+      # ueberschrieb den Fehlercode - der Schritt blieb gruen, und an JEDEM
+      # Release haengt nur der Lite-Installer (ohne Piper-Stimme).
+      - name: Installer bauen (Voll, mit Piper-Stimme)
         shell: pwsh
         run: |
           iscc installer\setup.iss
+          if ($LASTEXITCODE -ne 0) { throw "Voll-Installer fehlgeschlagen (Exit $LASTEXITCODE)" }
+
+      - name: Installer bauen (Lite)
+        shell: pwsh
+        run: |
           iscc /DLITE installer\setup.iss
+          if ($LASTEXITCODE -ne 0) { throw "Lite-Installer fehlgeschlagen (Exit $LASTEXITCODE)" }
           Get-ChildItem installer\Output | ForEach-Object { Write-Host ("{0,10:N2} MB  {1}" -f ($_.Length/1MB), $_.Name) }
+
+      # 0.4.2.10-CI Fail-Loud vor dem Upload: Beide Installer muessen existieren,
+      # der Voll-Installer muss die Piper-Stimme enthalten (dazu deutlich
+      # groesser als Lite sein).
+      - name: Installer pruefen
+        shell: pwsh
+        run: |
+          $full = Get-ChildItem 'installer/Output/PitBossR3E-Setup-*.exe' |
+                  Where-Object { $_.Name -notmatch 'Lite' } | Select-Object -First 1
+          if (-not $full) { throw 'Voll-Installer fehlt in installer/Output (nur Lite gebaut?)' }
+          if ($full.Length -lt 50MB) { throw "Voll-Installer verdaechtig klein ($([math]::Round($full.Length/1MB,1)) MB < 50 MB) - Piper-Stimme vermutlich nicht enthalten" }
+          Write-Host ("Voll-Installer OK: {0:N1} MB ({1})" -f ($full.Length/1MB), $full.Name)
 
       - name: Release veroeffentlichen
         uses: softprops/action-gh-release@v3

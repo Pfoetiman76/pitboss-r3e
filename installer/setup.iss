@@ -6,6 +6,10 @@
 ;   iscc installer\setup.iss          -> PitBossR3E-Setup-<Version>.exe      (mit Piper-Stimme)
 ;   iscc /DLITE installer\setup.iss    -> PitBossR3E-Setup-Lite-<Version>.exe (ohne Piper,
 ;                                          Sprachausgabe faellt auf Windows-SAPI zurueck)
+; 0.4.2.10-CI: Korrektur des piper-Quellpfads - PyInstaller 6 legt Datendateien
+; unter dist\PitBossR3E\_internal ab, NICHT direkt neben die EXE. Der alte Pfad
+; liess den Voll-Installer still scheitern (nur Lite wurde gebaut und an
+; Releases angehaengt).
 #define AppName "PitBoss R3E"
 #ifndef AppVer
   #define AppVer GetEnv("APP_VERSION")
@@ -46,7 +50,7 @@ Name: "desktopicon"; Description: "Desktop-Verknuepfung erstellen"; GroupDescrip
 ; Haupt-App; im Lite-Build wird der piper-Ordner ausgeschlossen
 Source: "..\dist\PitBossR3E\*"; DestDir: "{app}"; Excludes: "piper"; Flags: recursesubdirs createallsubdirs ignoreversion
 #ifndef LITE
-Source: "..\dist\PitBossR3E\piper\*"; DestDir: "{app}\piper"; Flags: recursesubdirs createallsubdirs ignoreversion
+Source: "..\dist\PitBossR3E\_internal\piper\*"; DestDir: "{app}\piper"; Flags: recursesubdirs createallsubdirs ignoreversion
 #endif
 
 [Icons]
