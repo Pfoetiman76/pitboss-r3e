@@ -33,7 +33,7 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.2.4 Beta"
+APP_VERSION = "0.4.2.5 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -7942,6 +7942,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
     # der VR mit einem Tuerkis-Rahmen; Pfeiltasten verschieben es (Shift =
     # Feinschritt), Bild auf/ab aendert die Groesse, Leertaste waehlt das
     # naechste Overlay, der Anordnen-Hotkey (Standard F4) beendet den Modus.
+    # 0.4.2.3: Alle Justage-Tasten nur mit gehaltenem Strg+Alt (Kamera!).
 
     def vr_arrange_targets(self):
         out = []
@@ -8469,8 +8470,10 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 p.drawText(38, ty + lh, zeile2)
             if sel is not None:
                 p.setPen(QColor(0, 229, 255, 240))
+                # 0.4.2.5: Hinweistext auf der Tafel auf die Strg+Alt-Belegung
+                # umgestellt (Spiel belegt die Nackttasten fuer die Kamera).
                 p.drawText(24, ch - 24, "Anordnen: " + self.vr_arrange_label(sel)
-                           + "  (Leertaste = naechstes, Pfeile = verschieben, Bild auf/ab = Groesse, Einfg/Entf = Abstand, Pos1/Ende = vertikal kippen, Komma/Punkt = horizontal kippen)")
+                           + "  (Strg+Alt+Pfeile = verschieben (Shift = fein), Strg+Alt+Bild auf/ab = Groesse, Strg+Alt+Einfg/Entf = Abstand, Strg+Alt+Pos1/Ende = vertikal kippen, Strg+Alt+Komma/Punkt = horizontal kippen, Strg+Alt+Leertaste = naechstes)")
             p.end()
             ptr = canvas.constBits()
             bpl = canvas.bytesPerLine()
