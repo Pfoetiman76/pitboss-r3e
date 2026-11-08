@@ -26,10 +26,27 @@ jobs:
         shell: bash
         run: echo "APP_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
 
+      # 0.4.2.9-CI: Piper + Stimme cachen. Beim Release-Build vom 08.11.2026 scheiterte
+      # der Piper-Download an GitHub-504-Ausfaellen (Server kurzzeitig ueberlastet) und
+      # riss den ganzen Build. Mit Cache laedt jeder folgende Build die Dateien nur noch
+      # einmal herunter und ist danach gegen solche Ausfaelle immun.
+      - name: Piper-Cache wiederherstellen
+        uses: actions/cache@v4
+        with:
+          path: piper
+          key: piper-win-2023.11.14-2-thorsten-high-v1
+
       - name: Piper + deutsche Stimme (Thorsten high) buendeln (offline im Installer)
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           New-Item -ItemType Directory -Force -Path piper | Out-Null
+          # 0.4.2.9-CI: Bei Cache-Hit (frueherer Build erfolgreich) gar kein Download.
+          $onnx_cached = Get-Item 'piper/de_DE-thorsten-high.onnx' -ErrorAction SilentlyContinue
+          if ((Test-Path 'piper/piper.exe') -and $onnx_cached -and $onnx_cached.Length -ge 20MB) {
+            Write-Host 'Piper + Stimme aus dem Cache vorhanden - Download uebersprungen.'
+          } else {
           # 0.5.7.1: robuster Download per curl.exe - folgt HF-LFS-Redirects, streamt auf
           # Platte (kein Speicher-Puffer wie Invoke-WebRequest) und wiederholt bei Abbruch
           # ("The response ended prematurely"). Mehrere Quellen als Fallback.
@@ -48,8 +65,27 @@ jobs:
             }
             throw "Alle Quellen fehlgeschlagen fuer $out"
           }
-          # Piper-Binary (MIT, self-contained)
-          Fetch @('https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_windows_amd64.zip') 'piper.zip'
+          # Piper-Binary (MIT, self-contained). 0.4.2.9-CI: Der Download von
+          # github.com fiel am 08.11.2026 mehrfach mit HTTP 504 aus (GitHub war
+          # einige Minuten ueberlastet). Deshalb: 5 Versuchsrunden mit Pause
+          # (jede Runde widerholt intern noch 6x) und als letzte Rueckfallebene
+          # die gh-CLI - sie laedt ueber api.github.com statt ueber die
+          # Download-Weiterleitung von github.com.
+          $piper_ok = $false
+          foreach ($i in 1..5) {
+            try {
+              Fetch @('https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_windows_amd64.zip') 'piper.zip'
+              $piper_ok = $true
+              break
+            } catch {
+              Write-Host "Piper-Download Versuch $i von 5 fehlgeschlagen - warte 30 s ..."
+              Start-Sleep -Seconds 30
+            }
+          }
+          if (-not $piper_ok) {
+            Write-Host 'Letzter Fallback: gh-CLI (api.github.com) fuer das Piper-Binary'
+            gh release download 2023.11.14-2 --repo rhasspy/piper --pattern 'piper_windows_amd64.zip' --output piper.zip --clobber
+          }
           Expand-Archive piper.zip -DestinationPath piper_tmp -Force
           Copy-Item piper_tmp/piper/* piper/ -Recurse -Force
           # Deutsche Stimme Thorsten (high): 0.5.9.20 - eigenes GitHub-Release-Asset als
@@ -70,6 +106,7 @@ jobs:
           if (-not $onnx)            { throw 'Thorsten-High-Stimme fehlt nach Download' }
           if ($onnx.Length -lt 20MB) { throw "Thorsten-High-Stimme unvollstaendig ($([math]::Round($onnx.Length/1MB,1)) MB)" }
           Write-Host ("Stimme OK: {0:N1} MB" -f ($onnx.Length/1MB))
+          }
           Get-ChildItem piper
 
       - name: PyInstaller-Build
