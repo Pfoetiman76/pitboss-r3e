@@ -33,7 +33,7 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.2.9 Beta"
+APP_VERSION = "0.4.2.10 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -1846,7 +1846,9 @@ class OverlayStyleMixin:
 
     # ---- 0.2.42: Skalierung + Deckkraft fuer ALLE Overlays (Vorbild: Reifen-Overlay) ----
     def set_ui_scale(self, scale):
-        new = max(0.5, min(2.5, float(scale) or 1.0))
+        # 0.4.2.10: Bereich erweitert 0.5..2.5 -> 0.3..3.0 (Marcels Wunsch:
+        # manche Overlays waren zu eng begrenzt, Verkleinerung bis 30 % erlaubt).
+        new = max(0.3, min(3.0, float(scale) or 1.0))
         self.ov_scale = new
         if not getattr(self, "_ov_base_size", None):
             self._ov_base_size = (self.width(), self.height())
@@ -3401,7 +3403,7 @@ class TireOverlayWindow(OverlayStyleMixin, QWidget):
         self.set_ui_scale(0.975)  # 0.1.2: ein Viertel kleiner als bisher (1.3)
 
     def set_ui_scale(self, scale):
-        self.ui_scale = max(0.7, min(2.2, float(scale) or 1.0))
+        self.ui_scale = max(0.3, min(3.0, float(scale) or 1.0))
         # 0.3.1.0: ov_scale spiegeln, damit der gemerkte Faktor ueber die
         # gemeinsame overlay_sizes.json wiederhergestellt werden kann.
         self.ov_scale = self.ui_scale
@@ -8048,7 +8050,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         if w is None or not hasattr(w, "set_ui_scale"):
             return
         try:
-            w.set_ui_scale(max(0.5, min(3.0, float(getattr(w, "ov_scale", 1.0)) + d)))
+            w.set_ui_scale(max(0.3, min(3.0, float(getattr(w, "ov_scale", 1.0)) + d)))
         except Exception:
             pass
 
