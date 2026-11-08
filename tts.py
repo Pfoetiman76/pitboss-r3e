@@ -19,8 +19,7 @@ Rate: -10..10. Volume: 0..100. (Piper: Rate/Volume systembedingt ohne Wirkung.)
 (die lauteste Stelle jeder Ansage wird auf gain% des Maximalpegels angehoben/
 abgesenkt). Auch sehr leise synthetisierte Ansagen sind bei 100 % voll
 ausgesteuert - ohne Uebersteuern, weil nur bis zum Ziel skaliert wird.
-100 % lauter, darunter leiser, mit Begrenzung gegen Uebersteuern). Bei
-SAPI/PowerShell ist die wirksame Lautstaerke volume*gain/100, gedeckelt auf 100.
+Bei SAPI/PowerShell ist die wirksame Lautstaerke volume*gain/100, gedeckelt auf 100.
 """
 
 from __future__ import annotations
