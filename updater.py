@@ -13,6 +13,7 @@ EINMALIG SETZEN: GITHUB_REPO auf dein "benutzer/repo" aendern.
 from __future__ import annotations
 
 import json
+import time
 import re
 import urllib.request
 import urllib.error
@@ -35,12 +36,29 @@ def check_for_update(current_version: str, repo: str | None = None, timeout: int
     repo = repo or GITHUB_REPO
     if "DEIN-" in repo or "/" not in repo:
         raise ValueError("GITHUB_REPO in updater.py ist noch nicht gesetzt (benutzer/repo).")
-    req = urllib.request.Request(
-        _API.format(repo=repo),
-        headers={"Accept": "application/vnd.github+json",
-                 "User-Agent": "PitBoss-R3E-Updater"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+    # 0.4.2.10: GitHub war am 08.11.2026 zeitweise mit HTTP 504 ueberlastet
+    # (dieselbe Welle, die auch den Release-Build riss). Die Update-Pruefung
+    # hatte nur EINEN Versuch und zeigte dann "fehlgeschlagen". Jetzt: bis zu
+    # 4 Versuche mit wachsender Pause (2/5/10 s) - kurzzeitige Ausfaelle
+    # uebersteht die Pruefung damit still.
+    data = None
+    last_err = None
+    for attempt, wait in enumerate((0, 2, 5, 10), 1):
+        if wait:
+            time.sleep(wait)
+        req = urllib.request.Request(
+            _API.format(repo=repo),
+            headers={"Accept": "application/vnd.github+json",
+                     "User-Agent": "PitBoss-R3E-Updater"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            break
+        except Exception as e:
+            last_err = e
+            data = None
+    if data is None:
+        raise RuntimeError(f"GitHub nicht erreichbar (4 Versuche): {last_err}")
     tag = data.get("tag_name", "") or ""
     if _ver(tag) <= _ver(current_version):
         return None
@@ -62,25 +80,36 @@ def download_asset(url: str, dest_path: str, progress_cb=None, timeout: int = 30
     """Laedt eine Release-Asset-Datei (z.B. den Installer) nach dest_path.
     progress_cb(done_bytes, total_bytes) wird waehrend des Downloads aufgerufen.
     Reine stdlib, kein Zusatzpaket. Gibt den Zielpfad zurueck; wirft bei Fehlern."""
-    req = urllib.request.Request(
-        url, headers={"User-Agent": "PitBoss-R3E-Updater",
-                      "Accept": "application/octet-stream"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        total = int(resp.headers.get("Content-Length") or 0)
-        done = 0
-        with open(dest_path, "wb") as f:
-            while True:
-                chunk = resp.read(65536)
-                if not chunk:
-                    break
-                f.write(chunk)
-                done += len(chunk)
-                if progress_cb is not None:
-                    try:
-                        progress_cb(done, total)
-                    except Exception:
-                        pass
-    return dest_path
+    # 0.4.2.10: Download ebenfalls mit bis zu 3 Versuchen (GitHub-504-Wellen
+    # wie am 08.11.2026); ein abgebrochener Versuch startet neu (ueberschreibt
+    # die unvollstaendige Datei).
+    last_err = None
+    for attempt, wait in enumerate((0, 3, 8), 1):
+        if wait:
+            time.sleep(wait)
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "PitBoss-R3E-Updater",
+                          "Accept": "application/octet-stream"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                total = int(resp.headers.get("Content-Length") or 0)
+                done = 0
+                with open(dest_path, "wb") as f:
+                    while True:
+                        chunk = resp.read(65536)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        done += len(chunk)
+                        if progress_cb is not None:
+                            try:
+                                progress_cb(done, total)
+                            except Exception:
+                                pass
+            return dest_path
+        except Exception as e:
+            last_err = e
+    raise RuntimeError(f"Download nach 3 Versuchen fehlgeschlagen: {last_err}")
 
 
 if __name__ == "__main__":
