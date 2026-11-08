@@ -7712,11 +7712,12 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                         + " (exports/coach_timing.json).")
         self.status.setText("Ansage-Vorlauf aktualisiert.")
 
-    def set_tts_volume(self):  # 0.4.2.9
-        """Sprachausgabe der Coaches lauter/leiser. Piper: echte
-        WAV-Verstaerkung bis 400 % (der alte Volume-Parameter wirkte bei
-        Piper nicht - Ursache fuer die leisen Ansagen); SAPI/PowerShell:
-        Stimmlautstaerke (max. 100 %). Gespeichert in tts_config.json."""
+    def set_tts_volume(self):  # 0.4.2.10: Ziel-Pegel statt starrer Verstaerkung
+        """Sprachausgabe der Coaches lauter/leiser. Piper: Jede Ansage wird
+        per Spitzen-Normalisierung auf den gewaehlten ZIEL-PEGEL angehoben
+        (bei 100 % immer voll ausgesteuert, unabhaengig davon, wie leise die
+        Stimme synthetisiert - Marcels 400-%-Test blieb zu leise); SAPI/
+        PowerShell: Stimmlautstaerke. Gespeichert in tts_config.json."""
         from PySide6.QtWidgets import (QDialog, QSlider, QVBoxLayout, QHBoxLayout,
                                        QLabel, QDialogButtonBox, QWidget, QPushButton)
         from PySide6.QtCore import Qt as _Qt
@@ -7729,16 +7730,17 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         dlg.setWindowTitle("Sprachausgabe-Lautstärke")
         lay = QVBoxLayout(dlg)
         backend = self.tts.backend()
-        intro = QLabel("Regler bewegen = sofort wirksam, auch bei der Testansage. 100 % = unver\u00e4ndert.\n"
-                       "\u00dcber 100 % verst\u00e4rkt PitBoss die Coach-Ansagen (sehr hohe Werte k\u00f6nnen leicht \u00fcbersteuern).\n"
-                       "Wird automatisch gespeichert. Backend: " + backend)
+        intro = QLabel("Ziel-Pegel: PitBoss hebt JEDE Ansage auf diesen Pegel an (Spitzen-Normalisierung) -\n"
+                       "100 % = Ansagen sind immer voll ausgesteuert, ohne Uebersteuern.\n"
+                       "Regler bewegen = sofort wirksam, auch bei der Testansage. Wird automatisch gespeichert.\n"
+                       "Backend: " + backend)
         intro.setWordWrap(True)
         lay.addWidget(intro)
         sld = QSlider(_Qt.Horizontal)
         sld.setMinimum(20)
-        sld.setMaximum(400)
-        sld.setSingleStep(10)
-        sld.setPageStep(50)
+        sld.setMaximum(100)
+        sld.setSingleStep(5)
+        sld.setPageStep(10)
         sld.setValue(int(getattr(self.tts, "gain", 100)))
         val = QLabel(f"{sld.value()} %")
         val.setMinimumWidth(56)

@@ -15,7 +15,10 @@ Backends (in dieser Prioritaet)
 4. Kein Backend (z.B. Nicht-Windows / nichts konfiguriert) -> speak() ist No-Op.
 
 Rate: -10..10. Volume: 0..100. (Piper: Rate/Volume systembedingt ohne Wirkung.)
-0.4.2.9: gain 20..400 % - echte WAV-Verstaerkung fuer Piper-Ansagen (ueber
+0.4.2.10: gain 20..100 % = ZIEL-PEGEL fuer Piper-Ansagen: Spitzen-Normalisierung
+(die lauteste Stelle jeder Ansage wird auf gain% des Maximalpegels angehoben/
+abgesenkt). Auch sehr leise synthetisierte Ansagen sind bei 100 % voll
+ausgesteuert - ohne Uebersteuern, weil nur bis zum Ziel skaliert wird.
 100 % lauter, darunter leiser, mit Begrenzung gegen Uebersteuern). Bei
 SAPI/PowerShell ist die wirksame Lautstaerke volume*gain/100, gedeckelt auf 100.
 """
@@ -69,7 +72,7 @@ class SpeechEngine:
         self.voice_name = ""
         self.rate = 0
         self.volume = 100
-        self.gain = 100                # 0.4.2.9: Verstaerkung 20..400 %
+        self.gain = 100                # 0.4.2.10: Ziel-Pegel 20..100 % (Piper)
         self.auto_read = True           # 0.4.7.4: Auto-Vorlesen standardmaessig an
         # Piper
         self.piper_exe = ""
@@ -179,7 +182,7 @@ class SpeechEngine:
             self.voice_name = cfg.get("voice", "") or ""
             self.rate = int(cfg.get("rate", 0))
             self.volume = int(cfg.get("volume", 100))
-            self.gain = max(20, min(400, int(cfg.get("gain", 100))))
+            self.gain = max(20, min(100, int(cfg.get("gain", 100))))
             self.auto_read = bool(cfg.get("auto_read", False))
             self.piper_exe = cfg.get("piper_exe", "") or ""
             self.piper_model = cfg.get("piper_model", "") or ""
@@ -210,21 +213,25 @@ class SpeechEngine:
         self._save_config()
 
     def set_gain(self, value: int) -> None:
-        """0.4.2.9: Verstaerkung 20..400 %. Piper: skaliert die WAV-Amplitude
-        vor dem Abspielen; SAPI/PowerShell: wirkt ueber volume*gain/100."""
-        self.gain = max(20, min(400, int(value)))
+        """0.4.2.10: gain = ZIEL-PEGEL in Prozent (20..100). Piper: Jede Ansage
+        wird per Spitzen-Normalisierung auf diesen Pegel angehoben/abgesenkt
+        (Marcels Rueckmeldung: selbst 400 % Verstaerkung blieb zu leise, weil
+        die Stimme sehr leise synthetisiert). SAPI/PowerShell: volume*gain/100."""
+        self.gain = max(20, min(100, int(value)))
         self._save_config()
 
     def _apply_gain(self, path: str, out=None) -> str:
-        """0.4.2.9: Skaliert die Amplitude einer 16-bit-WAV auf den gain-Faktor
-        (mit Begrenzung auf +/-32767 gegen hartes Uebersteuern). out=None ->
-        Datei wird ersetzt (Live-Ansagen); sonst wird eine NEUE Datei
-        geschrieben und das Original unangetastet gelassen (Clip-Cache).
-        Liefert den Pfad der abzuspielenden Datei zurueck (immer gueltig)."""
+        """0.4.2.10: Spitzen-Normalisierung einer 16-bit-WAV auf den ZIEL-PEGEL
+        'gain' (20..100 % des Maximalpegels): Die lauteste Stelle der Ansage
+        erreicht genau diesen Pegel, alles andere wird proportional mit-
+        skaliert. Von der Synthese-Leise der Stimme unabhaengig; kein
+        Uebersteuern, weil nur bis zum Ziel skaliert wird. out=None -> Datei
+        wird ersetzt (Live-Ansagen); sonst NEUE Datei, Original unangetastet
+        (Clip-Cache). Liefert den Pfad der abzuspielenden Datei zurueck."""
         g = int(getattr(self, "gain", 100))
-        if g == 100 or not path or not os.path.isfile(path):
+        if not path or not os.path.isfile(path):
             return path
-        factor = g / 100.0
+        factor = max(0.05, g / 100.0)
         import wave
         import array
         try:
@@ -235,6 +242,14 @@ class SpeechEngine:
                 return path          # nur 16-bit (Piper) verstaerken
             a = array.array("h")
             a.frombytes(frames)
+            peak = 0
+            for x in a:
+                ax = -x if x < 0 else x
+                if ax > peak:
+                    peak = ax
+            if peak <= 0:
+                return path            # stille Datei - nichts zu normalisieren
+            factor = factor * 32767.0 / peak
             b = array.array(
                 "h",
                 (max(-32768, min(32767, int(round(x * factor)))) for x in a),
