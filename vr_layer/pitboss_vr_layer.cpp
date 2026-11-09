@@ -17,8 +17,11 @@
 //
 //   Aeltere Protokolle bleiben lesbar: v2 (eine Gesamt-Leinwand mit Pose)
 //   und v1 (alte Einzeltafel) laufen ueber den bisherigen Ein-Quad-Pfad.
-//   Fehlt der Puffer (PitBoss laeuft nicht), zeigt der Layer ein ruhiges
-//   Testmuster - so ist der Layer ohne PitBoss pruefbar ("Testtafel").
+//   Fehlt der Puffer (PitBoss laeuft nicht), bleibt der Layer seit 0.4.2.10
+//   VOLLKOMMEN UNSICHTBAR (Marcels Wunsch: gruenes Testmuster stoerte im Spiel
+//   ohne PitBoss). Das Testmuster erscheint nur noch, wenn neben der DLL die
+//   Flag-Datei "pitboss_vr_testmuster.flag" liegt - so bleibt der Layer fuer
+//   Diagnosen gezielt pruefbar ("Testtafel" auf Anforderung).
 //
 // Aktivierung: impliziter Layer (Registry, siehe vr_layer/README.md).
 //   Explizite Layer werden nur geladen, wenn die Anwendung sie selbst
@@ -298,6 +301,36 @@ static XrQuaternionf TiltToQuaternion(float pitch, float yaw) {
     q.z = -sy * sp;
     q.w = cy * cp;
     return q;
+}
+
+// ---------------------------------------------------------------------------
+// 0.4.2.10: Testmuster nur noch auf Wunsch (Flag-Datei neben der DLL).
+// ---------------------------------------------------------------------------
+
+static bool TestPatternAllowed() {
+    static int cached = -1;                 // 0 = nein, 1 = ja (einmalig pruefen)
+    if (cached >= 0) return cached != 0;
+    HMODULE hSelf = nullptr;
+    char path[MAX_PATH] = {0};
+    bool allowed = false;
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCSTR>(&TestPatternAllowed),
+                            &hSelf) &&
+        GetModuleFileNameA(hSelf, path, MAX_PATH) != 0) {
+        char* slash = strrchr(path, '\\');
+        if (slash) {
+            strcpy_s(slash + 1, MAX_PATH - (slash + 1 - path),
+                     "pitboss_vr_testmuster.flag");
+            allowed = GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+        }
+    }
+    Log(allowed
+        ? "Testmuster AKTIV (Flag-Datei pitboss_vr_testmuster.flag gefunden)."
+        : "Testmuster deaktiviert - ohne PitBoss bleibt die Tafel unsichtbar "
+          "(Flag-Datei pitboss_vr_testmuster.flag fehlt, gewolltes Verhalten).");
+    cached = allowed ? 1 : 0;
+    return allowed;
 }
 
 // ---------------------------------------------------------------------------
@@ -720,8 +753,11 @@ static XrResult XRAPI_PTR LayerEndFrame(XrSession session,
         }
     }
     // Legazy-Pfad (v1/v2, Testmuster): Einzel-Tafer reicht der Slotlin nur,
-    // wenn PitBoss NICHT im v3-Modus schreibt.
-    if (st->ok && !anySlot && !(ShmValidV3(st) && st->slotsSeen)) {
+    // wenn PitBoss NICHT im v3-Modus schreibt. 0.4.2.10: Ohne PitBoss-Bild
+    // (ShmValid false) wird die Tafel NUR eingereicht, wenn das Testmuster
+    // per Flag-Datei aktiviert ist - sonst bleibt sie unsichtbar.
+    if (st->ok && !anySlot && !(ShmValidV3(st) && st->slotsSeen) &&
+        (ShmValid(st) || TestPatternAllowed())) {
         layers.push_back(
             reinterpret_cast<const XrCompositionLayerBaseHeader*>(&st->quad));
     }
