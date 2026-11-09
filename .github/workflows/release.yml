@@ -143,6 +143,16 @@ jobs:
       # Voll-Bau still (falscher piper-Pfad in setup.iss), der Lite-Bau
       # ueberschrieb den Fehlercode - der Schritt blieb gruen, und an JEDEM
       # Release haengt nur der Lite-Installer (ohne Piper-Stimme).
+      # Naechste Version: Lite-Installer mit eigenem Icon (LITE-Banner unten,
+      # PitBoss-Tuerkis). Das Skript erzeugt die Icon-Datei aus dem Original,
+      # setup.iss waehlt sie per #ifdef LITE aus. Voll-Installer bleibt unveraendert.
+      - name: Lite-Icon erzeugen
+        shell: pwsh
+        run: |
+          python scripts\make_lite_icon.py
+          if ($LASTEXITCODE -ne 0) { throw "Lite-Icon-Erzeugung fehlgeschlagen (Exit $LASTEXITCODE)" }
+          if (-not (Test-Path 'assets/pitboss_app_icon_lite.ico')) { throw 'assets/pitboss_app_icon_lite.ico fehlt' }
+
       - name: Installer bauen (Voll, mit Piper-Stimme)
         shell: pwsh
         run: |
