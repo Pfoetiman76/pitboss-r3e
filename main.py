@@ -33,7 +33,7 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.2.10 Beta"
+APP_VERSION = "0.4.2.11 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -4126,7 +4126,7 @@ class BlindSpotOverlayWindow(OverlayStyleMixin, QWidget):
     def mouseReleaseEvent(self, ev):
         self._drag = None
 
-    def _indicator(self, p, x, y, sq, active, label):
+    def _indicator(self, p, x, y, sq, active, label, direction):
         fill = QColor(self.AMBER) if active else self._panel()
         if not active:
             fill.setAlpha(90)
@@ -4142,12 +4142,16 @@ class BlindSpotOverlayWindow(OverlayStyleMixin, QWidget):
         ):
             p.drawLine(QPointF(ex, ey), QPointF(ex + dx1, ey + dy1))
             p.drawLine(QPointF(ex, ey), QPointF(ex + dx2, ey + dy2))
-        # Fuellung
-        inset = sq * 0.16
-        p.setPen(Qt.NoPen)
-        p.setBrush(fill)
-        p.drawRoundedRect(QRectF(x + inset, y + inset, sq - 2 * inset, sq - 2 * inset),
-                          (sq - 2 * inset) * 0.3, (sq - 2 * inset) * 0.3)
+        # 0.4.2.11: Doppel-Chevron statt gefuelltem Quadrat (Marcels Wunsch,
+        # Vorschau im Chat freigegeben). Spitze zeigt zur Seite (direction -1/+1).
+        asz = sq * 0.62
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(fill, max(2.0, asz * 0.17), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        for k in (0, 1):
+            ax = x + sq / 2 - k * asz * 0.42 * direction
+            p.drawLine(QPointF(ax, y + sq / 2 - asz * 0.42),
+                       QPointF(ax - direction * asz * 0.36, y + sq / 2),
+                       QPointF(ax, y + sq / 2 + asz * 0.42))
         # Beschriftung oben/unten
         p.setFont(QFont("Segoe UI", 7, QFont.DemiBold))
         p.setPen(self._muted())
@@ -4164,8 +4168,8 @@ class BlindSpotOverlayWindow(OverlayStyleMixin, QWidget):
         sq = min(h - 34, (w - 36) / 2)
         sq = max(24, sq)
         cy = (h - sq) / 2 + 3
-        self._indicator(p, 14, cy, sq, self._left, "LEFT")
-        self._indicator(p, w - 14 - sq, cy, sq, self._right, "RIGHT")
+        self._indicator(p, 14, cy, sq, self._left, "LEFT", -1)
+        self._indicator(p, w - 14 - sq, cy, sq, self._right, "RIGHT", 1)
         p.end()
 
 
