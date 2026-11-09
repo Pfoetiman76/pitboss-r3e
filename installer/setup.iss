@@ -37,7 +37,12 @@ SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64compatible
 WizardStyle=modern
 PrivilegesRequired=lowest
+; Lite-Installer bekommt eigenes Icon mit LITE-Banner (assets\pitboss_app_icon_lite.ico)
+#ifdef LITE
+SetupIconFile=..\assets\pitboss_app_icon_lite.ico
+#else
 SetupIconFile=..\assets\pitboss_app_icon.ico
+#endif
 UninstallDisplayIcon={app}\PitBossR3E.exe
 
 [Languages]
