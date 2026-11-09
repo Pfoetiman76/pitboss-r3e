@@ -1,0 +1,45 @@
+name: Handbuch aktuell halten
+
+# Haelt die Versionszeile in BENUTZERHANDBUCH.md automatisch synchron:
+# Nach jedem Merge, der das Programm (oder das Handbuch selbst) aendert,
+# wird APP_VERSION aus main.py ins Handbuch uebernommen und - falls noetig -
+# als kleiner Commit auf den Hauptzweig zurueckgeschoben ([skip ci] verhindert
+# eine Schleife). Der Inhalt des Handbuchs wird mit den Programm-Versionen
+# gepflegt; dieses Workflow aktualisiert die versionsabhaengigen Teile.
+
+on:
+  push:
+    branches: [main]
+    paths: ['main.py', 'tts.py', 'vr_overlay.py', 'installer/**', 'BENUTZERHANDBUCH.md']
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Version ins Handbuch uebernehmen
+        run: python installer/sync_handbuch.py
+
+      - name: Aenderungen committen (falls vorhanden)
+        shell: pwsh
+        run: |
+          git config user.name "pitboss-ci"
+          git config user.email "actions@users.noreply.github.com"
+          git add BENUTZERHANDBUCH.md
+          if (git diff --cached --quiet) {
+            Write-Host "Handbuch bereits aktuell - kein Commit noetig."
+            exit 0
+          }
+          git commit -m "Handbuch: Versionszeile automatisch aktualisiert [skip ci]"
+          git push
+          Write-Host "Handbuch-Commit auf main gepusht."

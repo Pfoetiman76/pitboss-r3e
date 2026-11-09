@@ -7,6 +7,9 @@ Liest den Shared Memory `$R3E` (Sector3 `r3e.h` v3.5) direkt - kein Plugin noeti
 - Recording, Rundenanalyse, Referenzrunden, Input-/Limit-Coach, Live-Coach (lokal, optional mit KI-Anbieter: ChatGPT, Mistral, Gemini, Claude, DeepSeek) und Sprachausgabe
 - Installer + Auto-Update ueber GitHub Releases
 
+**Bedienung und Einrichtung (VR, Overlays, Coaches, Loesungen): [BENUTZERHANDBUCH.md](BENUTZERHANDBUCH.md)**
+(dessen Versionszeile wird vom Workflow "Handbuch aktuell halten" automatisch synchronisiert)
+
 ## Entwicklung
 ```
 pip install PySide6 pywin32
