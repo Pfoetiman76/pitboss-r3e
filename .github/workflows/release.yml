@@ -3,6 +3,9 @@ name: Build & Release
 on:
   push:
     tags: ['v*']          # Release wird bei Tags wie v0.4.7.6 gebaut
+    branches: ['v*']      # 0.4.2.11-CI: gleicher Trigger auch ueber Release-Zweige
+                           # (Zweig v0.4.2.11 = main-Stand; Build erzeugt das Release
+                           # samt Tag selbst - kein manuelles Release-Anlegen mehr noetig)
   workflow_dispatch: {}    # manuell ausloesbar
 
 permissions:
@@ -183,3 +186,4 @@ jobs:
         with:
           files: installer/Output/PitBossR3E-Setup-*.exe
           generate_release_notes: true
+          tag_name: ${{ github.ref_name }}   # 0.4.2.11-CI: Release/Tag entstehen aus dem Zweignamen, falls der Push ein Zweig war
