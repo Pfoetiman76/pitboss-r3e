@@ -33,7 +33,7 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.2.11 Beta"
+APP_VERSION = "0.4.2.12 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -4149,9 +4149,12 @@ class BlindSpotOverlayWindow(OverlayStyleMixin, QWidget):
         p.setPen(QPen(fill, max(2.0, asz * 0.17), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
         for k in (0, 1):
             ax = x + sq / 2 - k * asz * 0.42 * direction
-            p.drawLine(QPointF(ax, y + sq / 2 - asz * 0.42),
-                       QPointF(ax - direction * asz * 0.36, y + sq / 2),
-                       QPointF(ax, y + sq / 2 + asz * 0.42))
+            # 0.4.2.12-HOTFIX: QPainter.drawLine kennt KEINE 3-Punkt-Form -
+            # der Aufruf warf TypeError im paintEvent und liess die App abstuerzen.
+            # Zwei Einzel-Segmente statt einer Punkt-Kette.
+            apex_x = ax - direction * asz * 0.36
+            p.drawLine(QPointF(ax, y + sq / 2 - asz * 0.42), QPointF(apex_x, y + sq / 2))
+            p.drawLine(QPointF(apex_x, y + sq / 2), QPointF(ax, y + sq / 2 + asz * 0.42))
         # Beschriftung oben/unten
         p.setFont(QFont("Segoe UI", 7, QFont.DemiBold))
         p.setPen(self._muted())
