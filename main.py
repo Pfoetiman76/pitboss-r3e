@@ -33,9 +33,26 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.3.0 Beta"
+APP_VERSION = "0.4.3.1 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
+
+
+def install_variant() -> str:
+    """0.4.3.1: 'VOLL', wenn die App mit Piper ausgeliefert wurde, sonst 'LITE'.
+    Erkennt das mitgelieferte Piper am Installationsort (piper.exe im piper-/
+    _internal/piper-Ordner) - identisch zur Autodetect-Logik in tts.py."""
+    try:
+        if getattr(sys, "frozen", False):
+            base = Path(sys.executable).resolve().parent
+        else:
+            base = APP_DIR
+        for d in (base / "piper", base / "_internal" / "piper"):
+            if (d / "piper.exe").is_file():
+                return "VOLL"
+    except Exception:
+        pass
+    return "LITE"
 
 
 class KeepOpenMenu(QMenu):
@@ -5412,6 +5429,18 @@ class Main(QMainWindow):
         self.nav_box.addStretch(1)
         _ver = QLabel(f"PitBoss R3E  v{APP_VERSION}"); _ver.setObjectName("verLabel")
         self.nav_box.addWidget(_ver)
+        # 0.4.3.1: VOLL/LITE-Abzeichen neben der Version (Marcels Wunsch)
+        _variant = install_variant()
+        _ver_badge = QLabel(_variant)
+        _ver_badge.setObjectName("verBadge")
+        _ver_badge.setAlignment(Qt.AlignCenter)
+        _ver_badge.setStyleSheet(
+            "background:#00e5ff; color:#04222b; border-radius:10px;"
+            "font-size:11px; font-weight:800; padding:2px 8px; margin-left:6px; max-height:18px;"
+            if _variant == "VOLL" else
+            "background:#f5a623; color:#2b1a00; border-radius:10px;"
+            "font-size:11px; font-weight:800; padding:2px 8px; margin-left:6px; max-height:18px;")
+        self.nav_box.addWidget(_ver_badge)
         self.tabs.currentChanged.connect(self._on_tab_changed)
         # 0.2.10: Einfache Ansicht (Standard): nur Dashboard/Live/Coach sichtbar
         self.ui_simple = load_ui_layout()
