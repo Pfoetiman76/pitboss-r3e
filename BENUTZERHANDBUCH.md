@@ -32,6 +32,8 @@ Auf der [Releases-Seite](https://github.com/Pfoetiman76/pitboss-r3e/releases) st
 
 Daten (Einstellungen, Logs, Reports) liegen unter `Dokumente\PitBoss R3E`.
 
+> Ab Version 0.4.3.0 ist der frühere Reiter „Live“ (Streckenkarte, Live-Zeile, Rundenliste mit den Unterreitern Reifen, Analyse, Runden, Vergleich, Heatmap, Sitzungen und Telemetrie) entfernt. Die Auswertung laufender Sitzungen wird in **R3E-Resultate** (Reiter „Live“) weitergeführt. Aufnahme (Recorder), Overlays, VR-Spiegel und Coaches bleiben unverändert in PitBoss.
+
 ## 3. Overlays am Monitor
 
 - **Öffnen:** Menü „Overlays" – das Menü bleibt bei Häkchen offen (abreißbar als eigenes Fenster). Alternativ „Alle im Fenster verwalten …".
@@ -83,7 +85,7 @@ Läuft PitBoss **nicht**, bleibt die VR-Tafel unsichtbar. Für Diagnosen kann di
 
 | Symptom | Lösung |
 | --- | --- |
-| Keine Telemetrie / Live-Ansicht leer | Lesbare Session fahren (Practice/Rennen, nicht Hauptmenü). Kein Effekt: Live-Log auf Reader-Fehler prüfen und melden. |
+| Keine Telemetrie / Overlays ohne Werte | Lesbare Session fahren (Practice/Rennen, nicht Hauptmenü). Kein Effekt: Live-Log auf Reader-Fehler prüfen und melden. |
 | Update-Prüfung schlägt fehl | Meist kurzzeitige GitHub-Störung; die App wiederholt automatisch. Dauerhaft: Installer über die Releases-Seite im Browser laden. |
 | Ansagen sehr leise | Ziel-Pegel auf 100 % stellen; prüfen, dass der Voll-Installer installiert ist (Backend „piper"). Zusätzlich Windows-Lautstärkemixer kontrollieren (Eintrag „PitBossR3E"). |
 | VR-Tafel bleibt leer | 1) R3E-OpenXR-Startoption gesetzt? 2) DLL entblockt? 3) `%TEMP%\PitBossVR_layer.log` prüfen – keine Datei heißt: Layer wird gar nicht geladen (Registry/Startoption). |
