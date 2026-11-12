@@ -3,7 +3,7 @@
 Telemetrie- und Coaching-App für RaceRoom Racing Experience (Windows, mit VR-Unterstützung).
 
 <!-- AUTO:VERSION:start -->
-Dieses Handbuch beschreibt **PitBoss R3E 0.4.3.0 Beta** (Stand: 2026-11-12, siehe [Releases](https://github.com/Pfoetiman76/pitboss-r3e/releases)).
+Dieses Handbuch beschreibt **PitBoss R3E 0.4.3.1 Beta** (Stand: 2026-11-12, siehe [Releases](https://github.com/Pfoetiman76/pitboss-r3e/releases)).
 <!-- AUTO:VERSION:end -->
 
 > Hinweis: Die Zeile oben zwischen den `AUTO:VERSION`-Marken wird vom Workflow „Handbuch aktuell halten" automatisch bei jeder Änderung auf dem Hauptzweig nachgezogen – das Handbuch veraltet also nie in der Versionsangabe. Inhaltliche Ergänzungen erfolgen mit den Programm-Versionen.
