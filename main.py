@@ -33,7 +33,7 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.2.12 Beta"
+APP_VERSION = "0.4.3.0 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -127,7 +127,7 @@ def save_analysis_config(cfg: dict) -> bool:
 
 # 0.2.10: Einfache Ansicht - nur diese Hauptansichten, der Rest bleibt
 # ueber den Experte-Modus (Mehr > Einfache Ansicht) erreichbar. Nichts wird geloescht.
-SIMPLE_VIEWS = ("Dashboard", "Live", "Coach")
+SIMPLE_VIEWS = ("Dashboard", "Coach")
 
 def load_ui_layout() -> bool:
     """0.2.10: True = Einfache Ansicht (Standard), False = Experte mit allen Ansichten."""
@@ -958,605 +958,6 @@ class SegmentDelta:
     ref_avg_throttle: float
     throttle_delta: float
     hint: str
-
-
-class TelemetryMapWidget(QWidget):
-    """0.2.25: Input-Streckenkarte im MoTeC-Stil - die gefahrene Linie ist
-    nach Input gefaerbt: gruen = Gas, rot = Bremse, grau = rollen/Teilgas.
-    Zeigt, WO auf der Strecke was am Pedal passiert."""
-
-    def __init__(self):
-        super().__init__()
-        self.rows = []
-        self.outline = []  # 0.2.26: Strecken-Umriss aus allen Runden, damit die Karte lesbar bleibt
-        self.cursor_dist = None  # 0.2.27: None = automatisch letzte Position, sonst Rundenmeter
-        self.setMinimumHeight(220)
-
-    def set_rows(self, rows):
-        self.rows = list(rows or [])
-        self.update()
-
-    def set_outline(self, rows):
-        self.outline = list(rows or [])
-        self.update()
-
-    def set_cursor_dist(self, d):
-        if d != self.cursor_dist:
-            self.cursor_dist = d
-            self.update()
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing, True)
-        p.fillRect(self.rect(), QColor(16, 16, 16))
-        rows = self.rows
-        if len(rows) < 2:
-            p.setPen(QColor(200, 200, 205))
-            p.drawText(self.rect(), Qt.AlignCenter, "Input-Karte erscheint mit aufgezeichneter Fahrt")
-            return
-        w, h = self.width(), self.height()
-        base = self.outline if len(self.outline) >= 2 else rows
-        # 0.2.28: gleiche Achsen wie die Heatmap-Karte - pos_x/pos_z, z nach oben gespiegelt
-        xs = [float(s.pos_x) for s in base]
-        zs = [float(s.pos_z) for s in base]
-        minx, maxx = min(xs), max(xs)
-        minz, maxz = min(zs), max(zs)
-        span = max(maxx - minx, maxz - minz, 1.0)
-        pad = 24.0
-        scale = max(min(w, h) - 2 * pad, 40.0)
-
-        def pt(s):
-            x = pad + (float(s.pos_x) - minx) / span * scale + max(0.0, (w - 2 * pad - scale) / 2.0)
-            y = pad + (maxz - float(s.pos_z)) / span * scale + max(0.0, (h - 2 * pad - scale) / 2.0)
-            return (x, y)
-
-        # 0.2.26: Strecken-Umriss zuerst (duenn, grau), damit die Karte lesbar bleibt
-        if len(self.outline) >= 2:
-            prev = None
-            p.setPen(QPen(QColor(85, 85, 92), 2))
-            for s in self.outline:
-                x, y = pt(s)
-                if prev is not None and abs(x - prev[0]) + abs(y - prev[1]) < 400:
-                    p.drawLine(QPointF(prev[0], prev[1]), QPointF(x, y))
-                prev = (x, y)
-        prev = None
-        for s in rows:
-            x, y = pt(s)
-            if prev is not None:
-                if abs(x - prev[0]) + abs(y - prev[1]) < 400:  # Sprung Start/Ziel abfangen
-                    if float(s.brake) > 0.08:
-                        col = QColor(220, 60, 50)      # Bremse
-                    elif float(s.throttle) > 0.5:
-                        col = QColor(80, 200, 100)      # Gas
-                    else:
-                        col = QColor(120, 120, 128)    # rollen / Teilgas
-                    p.setPen(QPen(col, 4))
-                    p.drawLine(QPointF(prev[0], prev[1]), QPointF(x, y))
-            prev = (x, y)
-        x0, y0 = pt(rows[0])  # Start/Ziel-Marker
-        p.setPen(QPen(QColor(235, 185, 60), 2))
-        p.drawEllipse(QPointF(x0, y0), 4, 4)
-        # 0.2.26/0.2.27: Position als gelber Punkt - automatisch am Ende oder am Cursor (Maus)
-        pos_s = rows[-1]
-        if self.cursor_dist is not None:
-            best = None
-            for s in rows:
-                d = abs(float(getattr(s, "lap_dist_m", 0.0) or 0.0) - float(self.cursor_dist))
-                if best is None or d < best[0]:
-                    best = (d, s)
-            if best is not None:
-                pos_s = best[1]
-        cur = pt(pos_s)
-        p.setPen(QPen(QColor(235, 185, 60), 2))
-        p.drawEllipse(QPointF(cur[0], cur[1]), 7, 7)
-        p.setPen(QPen(QColor(16, 16, 16), 2))
-        p.drawEllipse(QPointF(cur[0], cur[1]), 3, 3)
-        p.setPen(QColor(150, 150, 158))
-        p.drawText(QRectF(8, 4, 400, 16), Qt.AlignLeft, "Input-Karte: gruen = Gas, rot = Bremse, grau = rollen")
-
-
-class TelemetryTraceWidget(QWidget):
-    """0.2.24: MoTeC-i2-Stil - Kanaele ueber Rundenmeter: Throttle (gruen) und
-    Brake (rot) von 0..100%, darunter Steering zentriert, mit Raster und Achsen."""
-
-    def __init__(self):
-        super().__init__()
-        self.rows = []
-        self.cursor_dist = None  # 0.2.27: Rundenmeter des Cursors; None = automatisch am Ende folgen
-        self.on_cursor = None    # 0.2.27: Callback(dist) wenn der Nutzer den Cursor zieht
-        self.setMinimumHeight(260)
-        self.setMouseTracking(True)
-
-    def set_rows(self, rows):
-        self.rows = list(rows or [])
-        self.update()
-
-    def set_cursor_dist(self, d):
-        if d != self.cursor_dist:
-            self.cursor_dist = d
-            self.update()
-
-    def mousePressEvent(self, e):
-        self._cursor_from_pos(e)
-
-    def mouseMoveEvent(self, e):
-        if e.buttons() & Qt.LeftButton:
-            self._cursor_from_pos(e)
-
-    def _cursor_from_pos(self, e):
-        """0.2.27: Cursor per Maus ziehen - gelber Streifen ist interaktiv."""
-        if len(self.rows) < 2 or not self.on_cursor:
-            return
-        left = 86
-        plot_w = max(self.width() - left - 8, 1.0)
-        frac = max(0.0, min(1.0, (float(e.position().x()) - left) / plot_w))
-        dmax = 1.0
-        for s in self.rows:
-            d = float(getattr(s, "lap_dist_m", 0.0) or 0.0)
-            if d > dmax:
-                dmax = d
-        self.on_cursor(frac * dmax)
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing, True)
-        p.fillRect(self.rect(), QColor(16, 16, 16))
-        rows = self.rows
-        if len(rows) < 2:
-            p.setPen(QColor(200, 200, 205))
-            p.drawText(self.rect(), Qt.AlignCenter, "Pedale und Lenkung erscheinen mit aufgezeichneter Fahrt")
-            return
-        w, h = self.width(), self.height()
-        left = 86
-        dmax = 1.0
-        for s in rows:
-            d = float(getattr(s, "lap_dist_m", 0.0) or 0.0)
-            if d > dmax:
-                dmax = d
-        if dmax <= 0:
-            dmax = 1.0
-        plot_w = w - left - 8
-
-        def px(s):
-            return left + (float(getattr(s, "lap_dist_m", 0.0) or 0.0) / dmax) * plot_w
-
-        lane_h = h / 2.0
-        pedal_top, pedal_h = 20, lane_h - 26  # 0..100%
-        steer_mid = lane_h + lane_h / 2.0  # zentriert +-1
-        steer_amp = lane_h / 2.0 - 20.0
-        # Raster wie MoTeC: vertikal alle 10% Distanz, horizontal Viertel
-        p.setPen(QPen(QColor(56, 56, 60), 1))
-        for k in range(1, 10):
-            x = left + plot_w * k / 10.0
-            p.drawLine(int(x), 20, int(x), h - 2)
-        for k in range(1, 4):
-            y = pedal_top + pedal_h * k / 4.0
-            p.drawLine(left, int(y), w - 8, int(y))
-        p.setPen(QPen(QColor(90, 90, 96), 1))
-        p.drawLine(left, int(steer_mid), w - 8, int(steer_mid))
-        p.setPen(QPen(QColor(90, 90, 96), 2))
-        p.drawLine(left, int(pedal_top + pedal_h), w - 8, int(pedal_top + pedal_h))  # Nulllinie Pedale
-        # Achsen-Labels (MoTeC-Stil: links)
-        p.setPen(QColor(150, 150, 158))
-        p.drawText(QRectF(4, pedal_top - 2, left - 10, 14), Qt.AlignRight, "100%")
-        p.drawText(QRectF(4, pedal_top + pedal_h - 12, left - 10, 14), Qt.AlignRight, "0%")
-        p.drawText(QRectF(4, steer_mid - 8, left - 10, 14), Qt.AlignRight, "0")
-        p.drawText(QRectF(left, 2, 260, 16), Qt.AlignLeft, "Throttle / Brake")
-        p.drawText(QRectF(left, lane_h, 260, 16), Qt.AlignLeft, "Steering")
-        # Kurven: Throttle gruen, Brake rot (beide 0..100% nach oben)
-        for col, f in (
-            (QColor(80, 200, 100), lambda s: float(s.throttle)),
-            (QColor(220, 60, 50), lambda s: float(s.brake)),
-        ):
-            p.setPen(QPen(col, 2))
-            prev = None
-            for s in rows:
-                x = px(s)
-                y = pedal_top + pedal_h * (1.0 - max(0.0, min(1.0, f(s))))
-                if prev is not None and abs(x - prev[0]) <= 160:  # Sprung ueber Start/Ziel: unterbrechen
-                    p.drawLine(QPointF(prev[0], prev[1]), QPointF(x, y))
-                prev = (x, y)
-        # Lenkung zentriert
-        p.setPen(QPen(QColor(235, 185, 60), 2))
-        prev = None
-        for s in rows:
-            x = px(s)
-            y = steer_mid - max(-1.0, min(1.0, float(s.steering))) * steer_amp
-            if prev is not None and abs(x - prev[0]) <= 160:
-                p.drawLine(QPointF(prev[0], prev[1]), QPointF(x, y))
-            prev = (x, y)
-        # 0.2.26/0.2.27: gelber Positions-Streifen - automatisch am Ende, oder per Maus gezogen
-        if self.cursor_dist is not None:
-            cd = max(0.0, min(float(self.cursor_dist), dmax))
-        else:
-            cd = float(getattr(rows[-1], "lap_dist_m", 0.0) or 0.0)
-        cur = left + (cd / dmax) * plot_w
-        p.setPen(QPen(QColor(235, 185, 60), 2))
-        p.drawLine(QPointF(cur, 20), QPointF(cur, h - 2))
-
-
-class TrackMapWidget(QWidget):
-    def __init__(self):
-        super().__init__()
-        self.samples: List[Sample] = []
-        self.reference_samples: List[Sample] = []
-        self.compare_samples: List[Sample] = []
-        self.segment_deltas: List[SegmentDelta] = []
-        self.problem_zones = []
-        self.heatmap_mode = False
-        self.sector_bounds: List[float] = []  # 0.2.9: offizielle Sektorgrenzen (m), leer = unbekannt
-        self.heat_metric = "delta"  # 0.4.8.8/0.4.8.9: "delta" | "pedal" | "line"
-        self._line_idx = []        # 0.4.8.9: [(dist, x, z, path_lateral)] der Referenz
-        self._path_lat_ok = False  # mPathLateral/mTrackEdge liefern Daten?
-        self.setMinimumHeight(260)
-
-    def set_heat_metric(self, metric):
-        self.heat_metric = metric if metric in ("pedal", "line", "gear") else "delta"
-        self.update()
-
-    # ---- 0.4.8.9: Linienabweichung -------------------------------------
-    def _build_line_index(self):
-        idx = []
-        for s in self.reference_samples:
-            if abs(s.pos_x) > 0.001 or abs(s.pos_z) > 0.001:
-                idx.append((float(s.lap_dist_m), float(s.pos_x), float(s.pos_z),
-                            float(getattr(s, "path_lateral_m", 0.0) or 0.0)))
-        idx.sort(key=lambda t: t[0])
-        self._line_idx = idx
-        self._path_lat_ok = any(abs(t[3]) > 1e-6 for t in idx) and any(
-            abs(float(getattr(s, "path_lateral_m", 0.0) or 0.0)) > 1e-6 for s in self.compare_samples)
-
-    def _lateral_dev(self, s):
-        """Seitliche Abweichung dieser Probe zur Referenzlinie in Metern (signiert).
-        Nutzt mPathLateral wenn der Kanal Daten liefert, sonst rein geometrisch
-        (senkrechter Abstand zur Referenz-Spur). None wenn nicht bestimmbar."""
-        idx = self._line_idx
-        if len(idx) < 2:
-            return None
-        d = float(s.lap_dist_m)
-        lo, hi = 0, len(idx) - 1
-        if d <= idx[0][0] or d >= idx[-1][0]:
-            return None
-        while hi - lo > 1:
-            mid = (lo + hi) // 2
-            if idx[mid][0] <= d:
-                lo = mid
-            else:
-                hi = mid
-        d0, x0, z0, pl0 = idx[lo]
-        d1, x1, z1, pl1 = idx[hi]
-        span = (d1 - d0) or 1.0
-        if span > 60.0:
-            return None
-        t = (d - d0) / span
-        if self._path_lat_ok:
-            ref_pl = pl0 + (pl1 - pl0) * t
-            return float(getattr(s, "path_lateral_m", 0.0) or 0.0) - ref_pl
-        px = x0 + (x1 - x0) * t
-        pz = z0 + (z1 - z0) * t
-        hx, hz = (x1 - x0), (z1 - z0)
-        ln = (hx * hx + hz * hz) ** 0.5
-        if ln < 1e-6:
-            return None
-        nx, nz = hz / ln, -hx / ln
-        return (float(s.pos_x) - px) * nx + (float(s.pos_z) - pz) * nz
-
-    def _edge_margin_min(self):
-        """Kleinster Restabstand zum Streckenrand in der Vergleichsrunde (Meter)."""
-        if not self._path_lat_ok:
-            return None
-        best = None
-        for s in self.compare_samples:
-            edge = abs(float(getattr(s, "track_edge_m", 0.0) or 0.0))
-            if edge < 0.5 or float(s.speed_kmh) < 5.0:
-                continue
-            m = edge - abs(float(getattr(s, "path_lateral_m", 0.0) or 0.0))
-            if best is None or m < best:
-                best = m
-        return best
-
-    def set_samples(self, samples: List[Sample]):
-        self.samples = list(samples)
-        self.heatmap_mode = False
-        self.update()
-
-    def set_heatmap(self, all_samples: List[Sample], reference_samples: List[Sample], compare_samples: List[Sample], segment_deltas: List[SegmentDelta], problem_zones):
-        self.samples = list(all_samples)
-        self.reference_samples = list(reference_samples)
-        self.compare_samples = list(compare_samples)
-        self.segment_deltas = list(segment_deltas)
-        self.problem_zones = list(problem_zones)
-        self.heatmap_mode = True
-        self._build_line_index()  # 0.4.8.9
-        self.update()
-
-    def set_sector_info(self, bounds):
-        """0.2.9: offizielle Sektorgrenzen (Meter) fuer Grenzmarken + Labels auf der Map."""
-        b = [float(x) for x in (bounds or []) if float(x) > 0.0]
-        self.sector_bounds = b[:2] if len(b) >= 2 else []
-        self.update()
-
-    def _sector_label_for_m(self, m: float) -> str:
-        """0.2.9: S1/S2/S3 fuer eine Meter-Position anhand der offiziellen Grenzen."""
-        if len(self.sector_bounds) >= 2:
-            if m < self.sector_bounds[0]:
-                return "S1"
-            if m < self.sector_bounds[1]:
-                return "S2"
-            return "S3"
-        return ""
-
-    def _draw_sector_marks(self, painter, map_pt):
-        """0.2.9: offizielle Sektorgrenzen als weisse X-Marken mit S1|S2-Label."""
-        if len(self.sector_bounds) < 2:
-            return
-        pool = [s for s in (self.compare_samples or self.reference_samples or self.samples)
-                if abs(s.pos_x) > 0.001 or abs(s.pos_z) > 0.001]
-        if not pool:
-            return
-        for i, b in enumerate(self.sector_bounds[:2]):
-            near = min(pool, key=lambda s: abs(s.lap_dist_m - b))
-            if abs(near.lap_dist_m - b) > 60.0:
-                continue
-            pt = map_pt(near.pos_x, near.pos_z)
-            painter.setPen(QPen(QColor(255, 255, 255, 225), 2))
-            painter.drawLine(QPointF(pt.x() - 8, pt.y() - 8), QPointF(pt.x() + 8, pt.y() + 8))
-            painter.drawLine(QPointF(pt.x() - 8, pt.y() + 8), QPointF(pt.x() + 8, pt.y() - 8))
-            lbl = f"S{i + 1}|S{i + 2}"
-            r = QRectF(pt.x() + 10, pt.y() - 32, 62, 18)
-            painter.setBrush(QBrush(QColor(10, 10, 10, 175)))
-            painter.setPen(QPen(QColor(255, 255, 255), 1))
-            painter.drawRoundedRect(r, 4, 4)
-            painter.setPen(QColor(255, 255, 255))
-            painter.drawText(r.adjusted(4, 0, -2, 0), Qt.AlignVCenter | Qt.AlignLeft, lbl)
-
-    def _all_position_rows(self):
-        # 0.2.0: Ergebnis cachen - paintEvent lief bisher bei jedem Repaint ueber alle Samples.
-        key = (id(self.samples), len(self.samples), id(self.reference_samples), len(self.reference_samples),
-               id(self.compare_samples), len(self.compare_samples))
-        if getattr(self, "_rows_cache_key", None) == key:
-            return self._rows_cache
-        rows = []
-        for src in (self.samples, self.reference_samples, self.compare_samples):
-            rows.extend([s for s in src if abs(s.pos_x) > 0.001 or abs(s.pos_z) > 0.001])
-        self._rows_cache_key = key
-        self._rows_cache = rows
-        return rows
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing, True)
-        painter.fillRect(self.rect(), QColor(24, 24, 24))
-        painter.setPen(QPen(QColor(90, 90, 90), 1))
-        painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
-
-        rows = self._all_position_rows()
-        if len(rows) < 2:
-            painter.setPen(QColor(210, 210, 210))
-            painter.drawText(self.rect(), Qt.AlignCenter, "Trackmap: Recording starten und fahren")
-            return
-
-        xs = [s.pos_x for s in rows]; zs = [s.pos_z for s in rows]
-        minx, maxx = min(xs), max(xs); minz, maxz = min(zs), max(zs)
-        dx = max(maxx - minx, 1.0); dz = max(maxz - minz, 1.0)
-        margin = 22
-        w = max(self.width() - 2 * margin, 1); h = max(self.height() - 2 * margin, 1)
-        scale = min(w / dx, h / dz)
-        cx = (minx + maxx) / 2; cz = (minz + maxz) / 2
-
-        def map_pt(x, z):
-            px = self.width() / 2 + (x - cx) * scale
-            py = self.height() / 2 - (z - cz) * scale
-            return QPointF(px, py)
-
-        def draw_path(path: List[Sample], pen_func, min_speed_for_line=1.0):
-            pts = [s for s in path if s.speed_kmh >= min_speed_for_line and (abs(s.pos_x) > 0.001 or abs(s.pos_z) > 0.001)]
-            if len(pts) < 2:
-                return
-            pts.sort(key=lambda s: (s.lap_dist_m, s.timestamp))
-            for i in range(1, len(pts)):
-                s0, s1 = pts[i - 1], pts[i]
-                # avoid drawing a long line over start/finish wrap or bad distance jump
-                if abs(s1.lap_dist_m - s0.lap_dist_m) > 160:
-                    continue
-                painter.setPen(pen_func(s1))
-                painter.drawLine(map_pt(s0.pos_x, s0.pos_z), map_pt(s1.pos_x, s1.pos_z))
-
-        if self.heatmap_mode and self.heat_metric == "gear" and (self.compare_samples or self.reference_samples):
-            base = self.compare_samples or self.reference_samples
-            gear_cols = {1: QColor(235, 70, 55), 2: QColor(245, 150, 55), 3: QColor(235, 195, 70),
-                         4: QColor(140, 210, 90), 5: QColor(70, 190, 140), 6: QColor(70, 170, 235),
-                         7: QColor(140, 130, 240), 8: QColor(210, 110, 235)}
-            maxrpm = max([float(getattr(x, "max_rpm", 0.0) or 0.0) for x in base] + [0.0])
-            if maxrpm < 1000:
-                maxrpm = max([float(getattr(x, "rpm", 0.0) or 0.0) for x in base] + [1.0])
-
-            def gear_pen(s: Sample):
-                g = int(getattr(s, "gear", 0) or 0)
-                col = gear_cols.get(g, QColor(140, 140, 140))
-                frac = min(max(float(getattr(s, "rpm", 0.0) or 0.0) / maxrpm, 0.0), 1.0)
-                return QPen(col, 2 + int(4 * frac))
-
-            draw_path(base, gear_pen, 3.0)
-            painter.setPen(QColor(230, 230, 230))
-            painter.drawText(QRectF(8, 8, self.width() - 16, 44), Qt.AlignLeft,
-                             "Gang & Drehzahl: Farbe = Gang (1 rot → 8 violett) · Liniendicke = Drehzahl")
-            gx = 10
-            for g in range(1, 9):
-                painter.setPen(QPen(gear_cols[g], 4))
-                painter.drawLine(QPointF(gx, self.height() - 14), QPointF(gx + 16, self.height() - 14))
-                painter.setPen(QColor(220, 220, 220))
-                painter.drawText(QRectF(gx + 18, self.height() - 22, 12, 16), Qt.AlignLeft, str(g))
-                gx += 36
-            return
-
-        if self.heatmap_mode and self.heat_metric == "line" and self.compare_samples and self.reference_samples:
-            draw_path(self.reference_samples, lambda s: QPen(QColor(120, 120, 120), 2), 5.0)
-
-            def line_pen(s: Sample):
-                dv = self._lateral_dev(s)
-                if dv is None:
-                    return QPen(QColor(150, 150, 150), 2)
-                a = abs(dv)
-                if a < 0.3:
-                    return QPen(QColor(120, 200, 140), 2)
-                if a < 0.8:
-                    return QPen(QColor(235, 195, 70), 3)
-                if a < 1.5:
-                    return QPen(QColor(245, 150, 55), 4)
-                return QPen(QColor(235, 70, 55), 5)
-
-            draw_path(self.compare_samples, line_pen, 5.0)
-
-            # groesste Abweichungen markieren (max. 3, je 50-m-Bucket)
-            buckets = {}
-            for s in self.compare_samples:
-                if s.speed_kmh < 5.0:
-                    continue
-                dv = self._lateral_dev(s)
-                if dv is None:
-                    continue
-                key = int(s.lap_dist_m // 50) * 50
-                cur = buckets.get(key)
-                if cur is None or abs(dv) > abs(cur[0]):
-                    buckets[key] = (dv, s)
-            top = sorted(buckets.values(), key=lambda t: -abs(t[0]))[:3]
-            for rank, (dv, s) in enumerate(top, 1):
-                if abs(dv) < 0.4:
-                    continue
-                pt = map_pt(s.pos_x, s.pos_z)
-                painter.setBrush(QBrush(QColor(245, 150, 55, 230)))
-                painter.setPen(QPen(QColor(255, 255, 255), 2))
-                painter.drawEllipse(pt, 15, 15)
-                painter.setPen(QColor(255, 255, 255))
-                painter.drawText(QRectF(pt.x() - 12, pt.y() - 12, 24, 24), Qt.AlignCenter, str(rank))
-                side = "aussen" if dv > 0 else "innen"
-                label = f"{abs(dv):.1f} m {side}"
-                lr = QRectF(pt.x() + 17, pt.y() - 14, 118, 26)
-                painter.setBrush(QBrush(QColor(10, 10, 10, 185)))
-                painter.setPen(QPen(QColor(245, 150, 55), 1))
-                painter.drawRoundedRect(lr, 5, 5)
-                painter.setPen(QColor(255, 255, 255))
-                painter.drawText(lr.adjusted(6, 0, -4, 0), Qt.AlignVCenter | Qt.AlignLeft, label)
-
-            src_txt = "Quelle: mPathLateral" if self._path_lat_ok else "Quelle: Positionen (mPathLateral leer)"
-            margin = self._edge_margin_min()
-            margin_txt = f" · engster Rand-Abstand {margin:.2f} m" if margin is not None else ""
-            painter.setPen(QColor(230, 230, 230))
-            painter.drawText(QRectF(8, 8, self.width() - 16, 44), Qt.AlignLeft,
-                             "Linienabweichung zur Referenz: grün <0,3 m · gelb <0,8 · orange <1,5 · rot darüber | "
-                             + src_txt + margin_txt)
-            return
-
-        if self.heatmap_mode and self.heat_metric == "pedal" and (self.compare_samples or self.reference_samples):
-            base = self.compare_samples or self.reference_samples
-            if self.reference_samples and base is not self.reference_samples:
-                draw_path(self.reference_samples, lambda s: QPen(QColor(85, 85, 85), 2), 5.0)
-            def pedal_pen(s: Sample):
-                if s.brake > 0.05:
-                    return QPen(QColor(235, 70, 55), 2 + int(3 * min(s.brake, 1.0)))
-                if s.throttle > 0.05:
-                    return QPen(QColor(70, 190, 90), 2 + int(2 * min(s.throttle, 1.0)))
-                return QPen(QColor(235, 185, 60), 2)
-            draw_path(base, pedal_pen, 3.0)
-            painter.setPen(QColor(230, 230, 230))
-            painter.drawText(QRectF(8, 8, self.width() - 16, 44), Qt.AlignLeft,
-                             "Pedal-Input: grün = Gas · rot = Bremse · gelb = Segeln | grau = Referenz")
-            return
-
-        if self.heatmap_mode and self.reference_samples and self.compare_samples and self.segment_deltas:
-            delta_by_bucket = {d.start_m: d for d in self.segment_deltas}
-            draw_path(self.reference_samples, lambda s: QPen(QColor(110, 110, 110), 2), 5.0)
-
-            def heat_pen(s: Sample):
-                key = int(s.lap_dist_m // 50) * 50
-                d = delta_by_bucket.get(key)
-                if d is None:
-                    return QPen(QColor(150, 150, 150), 2)
-                if d.delta_s >= 0.14:
-                    return QPen(QColor(235, 70, 55), 5)
-                if d.delta_s >= 0.06:
-                    return QPen(QColor(245, 170, 60), 4)
-                if d.delta_s <= -0.10:
-                    return QPen(QColor(70, 190, 90), 4)
-                return QPen(QColor(190, 190, 190), 2)
-
-            draw_path(self.compare_samples, heat_pen, 5.0)
-
-            def draw_zone_segment(start_m: int, end_m: int, idx: int, loss: float):
-                # Draw the complete problem zone as a thick highlighted track section.
-                pts = [s for s in self.compare_samples
-                       if s.speed_kmh >= 5.0 and start_m <= s.lap_dist_m <= end_m
-                       and (abs(s.pos_x) > 0.001 or abs(s.pos_z) > 0.001)]
-                pts.sort(key=lambda s: (s.lap_dist_m, s.timestamp))
-                if len(pts) >= 2:
-                    zone_color = QColor(255, 70, 55, 205) if loss >= 0.30 else QColor(245, 160, 55, 205)
-                    painter.setPen(QPen(zone_color, 10, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-                    for i in range(1, len(pts)):
-                        if abs(pts[i].lap_dist_m - pts[i - 1].lap_dist_m) <= 120:
-                            painter.drawLine(map_pt(pts[i - 1].pos_x, pts[i - 1].pos_z), map_pt(pts[i].pos_x, pts[i].pos_z))
-
-                mid = (start_m + end_m) / 2
-                nearest = min(self.compare_samples, key=lambda s: abs(s.lap_dist_m - mid), default=None)
-                if nearest is None:
-                    return
-                pt = map_pt(nearest.pos_x, nearest.pos_z)
-                # Large numbered marker with a small text label.
-                painter.setBrush(QBrush(QColor(255, 70, 55, 230)))
-                painter.setPen(QPen(QColor(255, 255, 255), 2))
-                painter.drawEllipse(pt, 18, 18)
-                painter.setPen(QColor(255, 255, 255))
-                painter.drawText(QRectF(pt.x() - 12, pt.y() - 13, 24, 26), Qt.AlignCenter, str(idx))
-                sec = self._sector_label_for_m(start_m)  # 0.2.9: offizieller Sektor der Zone
-                label = f"Zone {idx}: {start_m}-{end_m} m" + (f" ({sec})" if sec else "")
-                label_rect = QRectF(pt.x() + 20, pt.y() - 16, 135, 30)
-                painter.setBrush(QBrush(QColor(10, 10, 10, 185)))
-                painter.setPen(QPen(QColor(255, 90, 80), 1))
-                painter.drawRoundedRect(label_rect, 5, 5)
-                painter.setPen(QColor(255, 255, 255))
-                painter.drawText(label_rect.adjusted(6, 0, -4, 0), Qt.AlignVCenter | Qt.AlignLeft, label)
-
-            # Mark grouped coach zones clearly as thick colored track sections.
-            for idx, zone in enumerate(self.problem_zones[:5], 1):
-                start, end, loss = zone[0], zone[1], zone[2]
-                draw_zone_segment(start, end, idx, loss)
-
-            painter.setPen(QColor(230, 230, 230))
-            painter.drawText(QRectF(8, 8, self.width() - 16, 44), Qt.AlignLeft,
-                             "Heatmap: dicke rote Zonen + Nummern = Coach-Fokus | Grau=Referenz | Grün=besser | X=Sektorgrenze")
-            # 0.2.26: aktuelle Position auch im Heatmap-Modus als gelber Punkt
-            try:
-                cur = self.compare_samples or self.reference_samples or self.samples
-                if cur:
-                    s = cur[-1]
-                    if abs(float(s.pos_x)) > 0.001 or abs(float(s.pos_z)) > 0.001:
-                        q = map_pt(float(s.pos_x), float(s.pos_z))
-                        painter.setPen(QPen(QColor(235, 185, 60), 2))
-                        painter.drawEllipse(q, 7, 7)
-                        painter.setPen(QPen(QColor(16, 16, 16), 2))
-                        painter.drawEllipse(q, 3, 3)
-            except Exception:
-                pass
-            self._draw_sector_marks(painter, map_pt)
-        else:
-            pts = self.samples
-            max_speed = max([s.speed_kmh for s in pts] + [1.0])
-            def live_pen(s: Sample):
-                if s.brake > 0.05:
-                    return QPen(QColor(230, 100, 80), 3)
-                if s.throttle > 0.8:
-                    return QPen(QColor(90, 180, 110), 2)
-                shade = int(120 + 100 * min(max(s.speed_kmh / max_speed, 0), 1))
-                return QPen(QColor(shade, shade, shade), 2)
-            draw_path(pts, live_pen, 0.0)
-            last = pts[-1]
-            painter.setBrush(QBrush(QColor(255, 230, 80)))
-            painter.setPen(QPen(QColor(0, 0, 0), 2))
-            lp = map_pt(last.pos_x, last.pos_z)
-            painter.drawEllipse(lp, 7, 7)  # 0.2.26: groesser, damit die Position klar erkennbar ist
-            painter.setPen(QColor(220, 220, 220))
-            painter.drawText(QRectF(8, 8, self.width() - 16, 20), Qt.AlignLeft, f"Samples: {len(self.samples)} | Speed max: {max_speed:.1f} km/h | Rot=Bremse | Grün=Gas | X=Sektorgrenze")
-            self._draw_sector_marks(painter, map_pt)
 
 
 def _load_overlay_sizes():
@@ -5883,51 +5284,7 @@ class Main(QMainWindow):
         dash_layout.addWidget(self.dash_coach, 1)
         self.tabs.addTab(dash_tab, "Dashboard")
 
-        live_tab = QWidget(); live_layout = QVBoxLayout(live_tab)
-        # 0.2.11: Layout im Stil einer Results-Comparison (Vorbild-Screenshot):
-        # Trackmap links, rechts Live-Zeile + Sektorzeiten + kompakte Rundenliste
-        # mit farbcodierten Sektorzeiten (gruen = beste, rot = schwaecheste).
-        self.trackmap = TrackMapWidget()
-        self.trackmap.setMinimumWidth(320)
-        self.live_summary = QTableWidget(0, 8)
-        self.live_summary.setHorizontalHeaderLabels([
-            "Aktuelle Runde", "Track m", "Speed", "Gang", "Fuel", "Letzte Runde", "Beste Runde", "Status"
-        ])
-        self.live_summary.horizontalHeader().setStretchLastSection(True)
-        self.sector_label = QLabel("Sektorzeiten: warte auf erste vollst\u00e4ndige Runde \u2026")  # 0.4.9.0
-        self.sector_label.setWordWrap(True)
-        self.brake_status_label = QLabel("Bremsen: warte auf Telemetrie \u2026")  # 0.4.9.4
-        self.brake_status_label.setWordWrap(True)
-        self.live_lap_table = QTableWidget(0, 7)  # 0.2.11: Rundenliste im Results-Stil
-        self.live_lap_table.setHorizontalHeaderLabels(["Lap", "Zeit", "S1", "S2", "S3", "Gap", "Fuel L"])
-        self.live_lap_table.horizontalHeader().setStretchLastSection(True)
-        self.live_lap_table.setAlternatingRowColors(True)
-        self.live_lap_table.verticalHeader().setDefaultSectionSize(26)
-        _live_right = QWidget(); _live_right.setProperty("plain", True)
-        _live_right_layout = QVBoxLayout(_live_right); _live_right_layout.setContentsMargins(8, 0, 0, 0)
-        _live_right_layout.addWidget(self.live_summary)
-        _live_right_layout.addWidget(self.sector_label)
-        _live_right_layout.addWidget(self.brake_status_label)
-        _live_right_layout.addWidget(self.live_lap_table, 1)
-        _live_split = QHBoxLayout()
-        _live_split.addWidget(self.trackmap, 3)
-        _live_split.addWidget(_live_right, 4)
-        live_layout.addLayout(_live_split)
-        live_layout.addWidget(self._hint("Live-Übersicht: Runden- und Statusdaten. Overlays über das Menü oben, " + self.hotkey_config.get("overlay", "F10") + " (Monitor) und " + self.hotkey_config.get("tire_overlay", "F6") + " (Reifen)."))
-        self.live_tabs = QTabWidget()  # 0.2.12: Unterteiter unter Live (wie beim Coach)
-        live_layout.addWidget(self.live_tabs, 2)  # 0.2.12: Reifen/Analyse/Runden/Vergleich/Heatmap
-        self.tabs.addTab(live_tab, "Live")
 
-        tires_tab = QWidget(); tires_layout = QVBoxLayout(tires_tab)
-        tires_layout.addWidget(self._hint("Reifen live aus dem Shared Memory: Temperatur außen/mitte/innen, Druck, Verschleiß, Flat-/ABS-Warnung."))
-        self.tire_table = QTableWidget(0, 10)
-        self.tire_table.setHorizontalHeaderLabels(["Reifen", "Druck kPa", "Druck bar", "Temp außen", "Temp mitte", "Temp innen", "Carcass", "Wear/Rest %", "Flat/ABS", "Hinweis"])
-        self.tire_table.horizontalHeader().setStretchLastSection(True)
-        tires_layout.addWidget(self.tire_table)
-        self.tire_note = QLabel("Noch keine Reifendaten.")
-        self.tire_note.setWordWrap(True)
-        tires_layout.addWidget(self.tire_note)
-        self.live_tabs.addTab(tires_tab, "Reifen")
 
         setup_tab = QWidget(); setup_layout = QVBoxLayout(setup_tab)
         setup_layout.addWidget(self._hint("Empfehlungen aus Temperatur-Spread, Druck und Verschleiß. Keine automatische Setup-Änderung."))
@@ -5937,129 +5294,11 @@ class Main(QMainWindow):
         setup_layout.addWidget(self.setup_coach_text)
         self.coach_tabs.addTab(setup_tab, "Setup-Coach")
 
-        analysis_tab = QWidget(); analysis_layout = QVBoxLayout(analysis_tab)
-        self.zone_table = QTableWidget(0, 7)
-        self.zone_table.setHorizontalHeaderLabels(["Zone", "Bereich", "Verlust", "Priorität", "Diagnose", "Handlung", "Speed Diff"])
-        self.zone_table.horizontalHeader().setStretchLastSection(True)
-        analysis_layout.addWidget(self._hint("Coach-Zonen statt 50-m-Sektorflut. Details stehen im Report."))
-        analysis_layout.addWidget(self.zone_table)
-        self.segment_table = QTableWidget(0, 9)
-        self.segment_table.setHorizontalHeaderLabels(["Sektor", "Meter", "Samples", "Avg Speed", "Min Speed", "Max Brake", "Avg Thr", "Gear häufig", "Hinweis"])
-        self.segment_table.setVisible(False)
-        analysis_layout.addWidget(self.segment_table)
-        self.live_tabs.addTab(analysis_tab, "Analyse")
 
-        laps_tab = QWidget(); laps_layout = QVBoxLayout(laps_tab)
-        laps_layout.addWidget(self._hint("S1/S2/S3 sind interne Streckendrittel. Grün = bester Wert, Rot = schwächster gültiger Wert."))
-        self.lap_overview_table = QTableWidget(0, 8)
-        self.lap_overview_table.setHorizontalHeaderLabels([
-            "Lap", "S1", "S2", "S3", "Rundenzeit", "Min", "Max", "Durchschn."
-        ])
-        self.lap_overview_table.horizontalHeader().setStretchLastSection(True)
-        self.lap_overview_table.setMinimumHeight(500)
-        self.lap_overview_table.setAlternatingRowColors(True)
-        self.lap_overview_table.verticalHeader().setDefaultSectionSize(30)
-        laps_layout.addWidget(self.lap_overview_table, stretch=7)
 
-        detail_label = QLabel("Detaildaten / Clean-Lap-Filter: Outlap/Pit/Standphase wird aussortiert. Beste gültige Runde wird als Referenz markiert.")
-        detail_label.setMaximumHeight(22)
-        laps_layout.addWidget(detail_label)
-        self.laps_table = QTableWidget(0, 13)
-        self.laps_table.setHorizontalHeaderLabels([
-            "Lap", "Status", "Grund", "Samples", "Coverage m", "Dauer", "Max Speed",
-            "Avg Speed", "Max Brake", "Fuel Used", "Start m", "End m", "Stand/Pit"
-        ])
-        self.laps_table.horizontalHeader().setStretchLastSection(True)
-        self.laps_table.setMaximumHeight(170)
-        self.laps_table.setMinimumHeight(90)
-        self.laps_table.verticalHeader().setDefaultSectionSize(22)
-        laps_layout.addWidget(self.laps_table, stretch=0)
-        self.live_tabs.addTab(laps_tab, "Runden")
 
-        compare_tab = QWidget(); compare_layout = QVBoxLayout(compare_tab)
-        compare_layout.addWidget(self._hint("Positive Delta-Werte bedeuten Zeitverlust gegenüber der Referenzrunde."))
-        compare_controls = QHBoxLayout()
-        compare_controls.addWidget(QLabel("Referenz:"))
-        self.ref_lap_combo = QComboBox(); self.ref_lap_combo.addItem("Auto", None)
-        compare_controls.addWidget(self.ref_lap_combo)
-        compare_controls.addWidget(QLabel("Vergleich:"))
-        self.cmp_lap_combo = QComboBox(); self.cmp_lap_combo.addItem("Auto", None)
-        compare_controls.addWidget(self.cmp_lap_combo)
-        self.btn_apply_laps = QPushButton("Auswahl anwenden")
-        compare_controls.addWidget(self.btn_apply_laps)
-        self.btn_compare_import_ref = QPushButton("Referenz importieren")
-        compare_controls.addWidget(self.btn_compare_import_ref)
-        compare_controls.addStretch(1)
-        compare_layout.addLayout(compare_controls)
-        self.compare_table = QTableWidget(0, 13)
-        self.compare_table.setHorizontalHeaderLabels([
-            "Sektor", "Meter", "Vergleich", "Referenz", "Delta s", "Vgl Zeit", "Ref Zeit",
-            "Vgl Avg", "Ref Avg", "Speed Diff", "Brake Diff", "Throttle Diff", "Hinweis"
-        ])
-        self.compare_table.horizontalHeader().setStretchLastSection(True)
-        compare_layout.addWidget(self.compare_table)
-        self.live_tabs.addTab(compare_tab, "Vergleich")
 
-        heatmap_tab = QWidget(); heatmap_layout = QVBoxLayout(heatmap_tab)
-        heatmap_layout.addWidget(self._hint("Vergleichsrunde gegen Referenz. Rot/Orange = Verlust, Grün = besser, Kreise = Coach-Zonen."))
-        self.heatmap_metric_combo = QComboBox()
-        self.heatmap_metric_combo.addItems(["Färbung: Delta (Zeitverlust)", "Färbung: Pedal-Input (Gas/Bremse)",
-                                           "Färbung: Linienabweichung (Meter)", "Färbung: Gang & Drehzahl"])
-        self.heatmap_metric_combo.currentIndexChanged.connect(
-            lambda i: self.heatmap.set_heat_metric({1: "pedal", 2: "line", 3: "gear"}.get(i, "delta")))
-        heatmap_layout.addWidget(self.heatmap_metric_combo)
-        self.heatmap = TrackMapWidget()
-        self.heatmap.setMinimumHeight(420)
-        heatmap_layout.addWidget(self.heatmap, stretch=1)
-        self.heatmap_note = QLabel("Nach Recording-Stopp oder Rundenauswahl wird die Heatmap automatisch aktualisiert.")
-        self.heatmap_note.setWordWrap(True)
-        heatmap_layout.addWidget(self.heatmap_note)
-        self.live_tabs.addTab(heatmap_tab, "Heatmap")
 
-        # 0.2.13: Sitzungs-Browser - gespeicherte Reports mit Datum/Name/Strecke/Fahrzeug/Runden/Bestzeit
-        sessions_tab = QWidget(); sessions_layout = QVBoxLayout(sessions_tab)
-        sessions_layout.addWidget(self._hint("Gespeicherte Aufzeichnungen. Doppelklick oder Button = Report anzeigen, Umbenennen vergibt einen eigenen Namen. Neue Sitzungen erscheinen automatisch nach dem Speichern."))
-        self.sessions_table = QTableWidget(0, 6)
-        self.sessions_table.setHorizontalHeaderLabels(["Datum", "Name", "Strecke", "Fahrzeug", "Runden", "Bestzeit"])
-        self.sessions_table.horizontalHeader().setStretchLastSection(True)
-        self.sessions_table.setAlternatingRowColors(True)
-        self.sessions_table.verticalHeader().setDefaultSectionSize(26)
-        self.sessions_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)  # 0.2.14: Enum statt 0 - PySide6 meldet sonst TypeError beim Start
-        self.sessions_table.doubleClicked.connect(lambda _i: self.open_session_report())
-        sessions_layout.addWidget(self.sessions_table, 1)
-        _sess_btns = QHBoxLayout()
-        _b_sess_show = QPushButton("Report anzeigen"); _b_sess_show.clicked.connect(self.open_session_report)
-        _b_sess_ren = QPushButton("Umbenennen"); _b_sess_ren.clicked.connect(self.rename_session)
-        _b_sess_del = QPushButton("Löschen"); _b_sess_del.clicked.connect(self.delete_session)
-        _b_sess_load = QPushButton("In Ansicht laden"); _b_sess_load.clicked.connect(self.load_session_into_views)
-        _b_sess_ref = QPushButton("Aktualisieren"); _b_sess_ref.clicked.connect(self.refresh_sessions_table)
-        _sess_btns.addWidget(_b_sess_show); _sess_btns.addWidget(_b_sess_ren); _sess_btns.addWidget(_b_sess_del); _sess_btns.addWidget(_b_sess_load); _sess_btns.addStretch(1); _sess_btns.addWidget(_b_sess_ref)
-        sessions_layout.addLayout(_sess_btns)
-        self.live_tabs.addTab(sessions_tab, "Sitzungen")
-
-        # 0.2.21: Telemetrie-Reiter - G-G-Diagramm + Spuren (G-Kraefte, Lenkung, Pedale)
-        telemetry_tab = QWidget(); telemetry_layout = QVBoxLayout(telemetry_tab)
-        telemetry_layout.addWidget(self._hint("MoTeC-Stil: Gas (grün) und Bremse (rot) von 0 bis 100%, darunter die Lenkung zentriert, jeweils über die Rundenmeter. Rechts oben wird die Runde gewählt, die Input-Karte zeigt, wo auf der Strecke gas gegeben bzw. gebremst wird."))
-        _tele_btns = QHBoxLayout()
-        _tele_btns.addStretch(1)
-        _tele_btns.addWidget(QLabel("Runde:"))
-        self.telemetry_lap_combo = QComboBox()  # 0.2.25: einzelne Runden auswaehlbar
-        self.telemetry_lap_combo.currentIndexChanged.connect(lambda _i: self.update_telemetry_view())
-        _tele_btns.addWidget(self.telemetry_lap_combo)
-        _b_tele_ref = QPushButton("Aktualisieren"); _b_tele_ref.clicked.connect(self.update_telemetry_view)
-        _tele_btns.addWidget(_b_tele_ref)
-        _b_tele_follow = QPushButton("Live folgen"); _b_tele_follow.clicked.connect(lambda: self._set_telemetry_cursor(None))  # 0.2.27
-        _tele_btns.addWidget(_b_tele_follow)
-        telemetry_layout.addLayout(_tele_btns)
-        self.telemetry_trace = TelemetryTraceWidget()
-        self.telemetry_trace.on_cursor = self._set_telemetry_cursor  # 0.2.27: Cursor ziehen
-        telemetry_layout.addWidget(self.telemetry_trace, 3)
-        self.telemetry_map = TelemetryMapWidget()  # 0.2.25: Input-Karte
-        telemetry_layout.addWidget(self.telemetry_map, 2)
-        self.telemetry_note = QLabel("")
-        self.telemetry_note.setStyleSheet("color: #8f8f99; font-size: 12px;")
-        telemetry_layout.addWidget(self.telemetry_note)
-        self.live_tabs.addTab(telemetry_tab, "Telemetrie")
 
         coach_tab = QWidget(); coach_layout = QVBoxLayout(coach_tab)
         coach_layout.addWidget(self._hint("Zusammenhängende Kurven-/Bremszonen mit Verlust, Priorität und Fahranweisung."))
@@ -6162,9 +5401,7 @@ class Main(QMainWindow):
         self.nav_group = QButtonGroup(self); self.nav_group.setExclusive(True)
         self.nav_buttons = {}
         _tab_index = {self.tabs.tabText(i): i for i in range(self.tabs.count())}
-        for _label, _key in (("DASHBOARD", "Dashboard"), ("LIVE", "Live"), ("REIFEN", "Reifen"),
-                             ("ANALYSE", "Analyse"), ("RUNDEN", "Runden"), ("VERGLEICH", "Vergleich"),
-                             ("HEATMAP", "Heatmap"), ("COACH", "Coach")):
+        for _label, _key in (("DASHBOARD", "Dashboard"), ("COACH", "Coach")):
             if _key not in _tab_index:
                 continue
             _b = QPushButton(_label); _b.setObjectName("navBtn"); _b.setCheckable(True)
@@ -6180,7 +5417,6 @@ class Main(QMainWindow):
         self.ui_simple = load_ui_layout()
         self.apply_ui_mode()
         self.show_view("Dashboard")
-        self.refresh_sessions_table()  # 0.2.13
         self.view_timer = QTimer(self)  # 0.2.0: 2 Hz, nur sichtbare Ansicht
         self.view_timer.setInterval(500)
         self.view_timer.timeout.connect(self._view_tick)
@@ -6214,8 +5450,6 @@ class Main(QMainWindow):
         self.btn_overlay.clicked.connect(self.toggle_overlay)
         self.btn_tire_overlay.clicked.connect(self.toggle_tire_overlay)
         self.btn_pedal_overlay.clicked.connect(self.toggle_pedal_overlay)
-        self.btn_apply_laps.clicked.connect(self.apply_lap_selection)
-        self.btn_compare_import_ref.clicked.connect(self.import_reference_lap)
         self.setup_selector.currentTextChanged.connect(lambda _txt: self.refresh_dashboard())
         self.driver_profile_selector.currentTextChanged.connect(self.on_profile_changed)
         self.btn_profile_save.clicked.connect(self.save_current_hardware_profile)
@@ -8846,24 +8080,6 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 self._heavy_dirty = False
                 self._update_dash_heavy()
             self._update_dash_cards(s)
-        elif name == "Live":
-            if s is not None:
-                self._fill_live_summary(s)
-            self._tm_tick = getattr(self, "_tm_tick", 0) + 1
-            if self.recording and self._tm_tick % 4 == 0 and len(self.samples) != getattr(self, "_tm_len", -1):
-                self._tm_len = len(self.samples)
-                self.trackmap.set_samples(self.samples)
-                self.trackmap.set_sector_info(self.official_sector_bounds())  # 0.2.9
-            # 0.2.21: Telemetrie-Reiter live aktualisieren (~alle 2 s)
-            self._tele_tick = getattr(self, "_tele_tick", 0) + 1
-            if self._tele_tick % 20 == 0 and hasattr(self, "telemetry_trace"):
-                try:
-                    self.update_telemetry_view()
-                except Exception:
-                    pass
-        elif name == "Reifen":
-            if s is not None:
-                self.update_tire_table(s)
         elif name == "Coach":
             if getattr(self, "_heavy_dirty", True) and not live_only:
                 self._heavy_dirty = False
@@ -9561,7 +8777,6 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         self.auto_bestlap_time_s = lap_time
         self.external_reference = payload
         self.use_external_reference = True
-        self.refresh_lap_combos()
         src = "Live-Bestlap" if live else "Auto-Bestlap"
         self.log.append(f"{src} exportiert und als Referenz aktiviert: Lap {lap.lap_number} | {fmt_lap_time(lap_time)} | {path}")
         self.refresh_dashboard()
@@ -9635,7 +8850,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         self.log.append(f"Externe Referenz geladen und aktiviert: {self.external_reference_label()}")
         if cur_class == ref_class and cur_car and meta.get("vehicle_name") and cur_car != meta.get("vehicle_name"):
             self.log.append("Hinweis: gleiche Klasse, anderes Fahrzeug — Vergleich ist erlaubt, aber fahrzeugspezifische Unterschiede beachten.")
-        self.refresh_lap_combos(); self.update_lap_compare(); self.update_heatmap(); self.update_coach_text(); self.refresh_dashboard()
+        self.update_lap_compare(); self.update_coach_text(); self.refresh_dashboard()
 
     def open_export_folder(self):
         for _d in (EXPORT_DIR, REPORT_DIR, CSV_DIR, REFERENCE_DIR):
@@ -9650,51 +8865,6 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             return float(txt)
         except Exception:
             return None
-
-    def refresh_lap_combos(self):
-        if not hasattr(self, "ref_lap_combo"):
-            return
-        clean = [l for l in self.lap_summaries if self.lap_eval_ok(l)]  # 0.2.31
-        old_ref = "__external__" if self.use_external_reference and self.external_reference else self.manual_reference_lap
-        old_cmp = self.manual_compare_lap
-        self.ref_lap_combo.blockSignals(True); self.cmp_lap_combo.blockSignals(True)
-        self.ref_lap_combo.clear(); self.cmp_lap_combo.clear()
-        self.ref_lap_combo.addItem("Auto – beste Sessionrunde", None)
-        if self.external_reference:
-            self.ref_lap_combo.addItem("Importierte Referenz AKTIV/auswählbar – " + self.external_reference_label(short=True), "__external__")
-        self.cmp_lap_combo.addItem("Auto – beste Vergleichsrunde", None)
-        for l in clean:
-            t = self.estimated_lap_time_from_speed(l.lap_number)
-            label = f"Lap {l.lap_number} | {fmt_lap_time(t)}* | Avg {l.avg_speed:.1f}"
-            self.ref_lap_combo.addItem("Session: " + label, l.lap_number)
-            self.cmp_lap_combo.addItem(label, l.lap_number)
-        def select(combo, val):
-            idx = 0
-            if val is not None:
-                for i in range(combo.count()):
-                    if combo.itemData(i) == val:
-                        idx = i; break
-            combo.setCurrentIndex(idx)
-        select(self.ref_lap_combo, old_ref); select(self.cmp_lap_combo, old_cmp)
-        self.ref_lap_combo.blockSignals(False); self.cmp_lap_combo.blockSignals(False)
-
-    def apply_lap_selection(self):
-        ref_choice = self.ref_lap_combo.currentData()
-        self.use_external_reference = (ref_choice == "__external__")
-        self.manual_reference_lap = None if self.use_external_reference else ref_choice
-        self.manual_compare_lap = self.cmp_lap_combo.currentData()
-        if self.manual_reference_lap is not None and self.manual_compare_lap is not None and self.manual_reference_lap == self.manual_compare_lap:
-            QMessageBox.warning(self, "Rundenauswahl", "Referenz und Vergleich dürfen nicht dieselbe Runde sein.")
-            self.manual_compare_lap = None
-            self.cmp_lap_combo.setCurrentIndex(0)
-        self.update_laps()
-        self.update_segments()
-        self.update_lap_compare()
-        self.update_heatmap()
-        self.update_coach_text()
-        ref_log = "Import" if self.use_external_reference else (self.manual_reference_lap or "Auto")
-        self.log.append(f"Rundenauswahl angewendet: Referenz={ref_log} | Vergleich={self.manual_compare_lap or 'Auto'}")
-        self.refresh_dashboard()
 
     def lap_by_number(self, lap_number: Optional[int]) -> Optional[LapSummary]:
         if lap_number is None:
@@ -10154,9 +9324,6 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             if self.recording:
                 self.stop_recording()
         if not silent:
-            self.add_sample_to_table(s)
-            self.trackmap.set_samples(self.samples)
-            self.trackmap.set_sector_info(self.official_sector_bounds())  # 0.2.9
             self.status.setText(f"Letzter Snapshot: {s.track} | {s.vehicle_name} | {s.speed_kmh:.1f} km/h | Gear {s.gear} | Fuel {s.fuel_l:.2f} L")
             self.refresh_dashboard()
         if not silent:
@@ -10167,9 +9334,8 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         if self.recording:
             self.log.append("Recording läuft bereits – Start ignoriert.")
             return
-        self.samples.clear(); self.lap_summaries.clear(); self.reference_lap = None; self.compare_lap = None; self.segment_deltas = []; self.manual_reference_lap = None; self.manual_compare_lap = None; self.auto_bestlap_export_path = None; self.auto_bestlap_lap_number = None; self.auto_bestlap_time_s = None; self.live_best_reference_segments = {}; self.live_best_reference_lap = None; self.live_best_reference_time_s = None; self.recording_signature = None; self.rejected_sample_count = 0; self.pending_switch_signature = None; self.pending_switch_count = 0; self.live_summary.setRowCount(0); self.segment_table.setRowCount(0); self.zone_table.setRowCount(0); self.laps_table.setRowCount(0); self.lap_overview_table.setRowCount(0); self.live_lap_table.setRowCount(0) if hasattr(self, "live_lap_table") else None; self.compare_table.setRowCount(0); self.coach_text.clear(); self.limit_coach_text.clear() if hasattr(self, "limit_coach_text") else None;
-        self.input_table.setRowCount(0) if hasattr(self, "input_table") else None; self.input_coach_text.clear() if hasattr(self, "input_coach_text") else None; self.trackmap.set_samples([]);
-        self.heatmap.set_samples([]) if hasattr(self, 'heatmap') else None; self.refresh_lap_combos()
+        self.samples.clear(); self.lap_summaries.clear(); self.reference_lap = None; self.compare_lap = None; self.segment_deltas = []; self.manual_reference_lap = None; self.manual_compare_lap = None; self.auto_bestlap_export_path = None; self.auto_bestlap_lap_number = None; self.auto_bestlap_time_s = None; self.live_best_reference_segments = {}; self.live_best_reference_lap = None; self.live_best_reference_time_s = None; self.recording_signature = None; self.rejected_sample_count = 0; self.pending_switch_signature = None; self.pending_switch_count = 0; self.coach_text.clear(); self.limit_coach_text.clear() if hasattr(self, "limit_coach_text") else None;
+        self.input_table.setRowCount(0) if hasattr(self, "input_table") else None; self.input_coach_text.clear() if hasattr(self, "input_coach_text") else None
         self.recording = True; self.timer.start()
         self.snapshot(silent=True)  # 0.4.8.1: Snapshot automatisch bei Start
         self._set_rec_ui(True)
@@ -10193,62 +9359,6 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 "sobald Daten kommen.")
         self.refresh_dashboard()
 
-    def _set_telemetry_cursor(self, dist):
-        """0.2.27: Positions-Cursor (Rundenmeter) fuer Spuren + Input-Karte setzen.
-        None = automatisch dem letzten Sample folgen."""
-        self._telemetry_cursor_dist = dist
-        if hasattr(self, "telemetry_trace"):
-            self.telemetry_trace.set_cursor_dist(dist)
-        if hasattr(self, "telemetry_map"):
-            self.telemetry_map.set_cursor_dist(dist)
-
-    def update_telemetry_view(self):
-        """0.2.25: Telemetrie-Reiter - gewaehlte Runde, Kanal-Spuren + Input-Karte."""
-        if not hasattr(self, "telemetry_trace"):
-            return
-        driven = [s for s in (self.samples or []) if float(getattr(s, "lap_dist_m", -1.0) or 0.0) >= 0 and float(s.speed_kmh) > 2.0]
-        # Runden-Auswahl oben rechts: Liste nur bei Aenderung neu fuellen, Auswahl bewahren
-        laps = sorted({int(s.lap_number) for s in driven if int(s.lap_number) > 0})
-        if hasattr(self, "telemetry_lap_combo"):
-            labels = ["Alle Runden"] + ["Runde " + str(n) for n in laps]
-            cur_labels = [self.telemetry_lap_combo.itemText(i) for i in range(self.telemetry_lap_combo.count())]
-            if cur_labels != labels:
-                cur = self.telemetry_lap_combo.currentText()
-                self.telemetry_lap_combo.blockSignals(True)
-                self.telemetry_lap_combo.clear()
-                self.telemetry_lap_combo.addItems(labels)
-                idx = self.telemetry_lap_combo.findText(cur)
-                self.telemetry_lap_combo.setCurrentIndex(idx if idx >= 0 else 0)
-                self.telemetry_lap_combo.blockSignals(False)
-        rows = driven[-4000:]
-        sel = self.telemetry_lap_combo.currentText() if hasattr(self, "telemetry_lap_combo") else "Alle Runden"
-        if sel != "Alle Runden":  # 0.2.25: nur die gewaehlte Runde zeigen
-            try:
-                lapno = int(sel.replace("Runde ", ""))
-                rows = [s for s in driven if int(s.lap_number) == lapno]
-            except Exception:
-                pass
-        self.telemetry_trace.set_rows(rows)
-        if hasattr(self, "telemetry_map"):
-            self.telemetry_map.set_outline(driven)  # 0.2.26: Strecken-Umriss aus allen Runden
-            self.telemetry_map.set_rows(rows)
-        # 0.2.27: manuellen Cursor beibehalten (None = automatisch folgen)
-        cur = getattr(self, "_telemetry_cursor_dist", None)
-        self.telemetry_trace.set_cursor_dist(cur)
-        if hasattr(self, "telemetry_map"):
-            self.telemetry_map.set_cursor_dist(cur)
-        if rows:
-            tmax = 0.0
-            bmax = 0.0
-            for s in rows:
-                if float(s.throttle) > tmax:
-                    tmax = float(s.throttle)
-                if float(s.brake) > bmax:
-                    bmax = float(s.brake)
-            self.telemetry_note.setText(sel + " | max Gas " + f"{tmax * 100:.0f}" + "% | max Bremse " + f"{bmax * 100:.0f}" + "% | Samples: " + str(len(rows)))
-        else:
-            self.telemetry_note.setText("Noch keine gefahrenen Samples.")
-
     def stop_recording(self):
         if not self.recording:
             self.log.append("Recording ist nicht aktiv – Stop ignoriert.")
@@ -10258,13 +9368,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         self.log.append(f"Recording gestoppt. Samples: {len(self.samples)} | verworfen wegen Fahrzeugwechsel/ungültig: {self.rejected_sample_count}")
         self.update_laps()
         self.auto_export_bestlap_reference()
-        ref_samples = self.samples_for_reference_lap()
-        self.trackmap.set_samples(ref_samples if ref_samples else self.samples)
-        self.trackmap.set_sector_info(self.official_sector_bounds())  # 0.2.9
-        self.update_segments()
         self.update_lap_compare()
-        self.update_heatmap()
-        self.update_telemetry_view()  # 0.2.21
         self.update_coach_text()
         self.update_input_coach()
         res_save = self.autosave_exports()  # 0.2.30: Ergebnis wird gleich ausgewertet
@@ -10272,9 +9376,8 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         self.refresh_dashboard()
 
     def clear(self):
-        self.samples.clear(); self.lap_summaries.clear(); self.reference_lap = None; self.compare_lap = None; self.segment_deltas = []; self.manual_reference_lap = None; self.manual_compare_lap = None; self.auto_bestlap_export_path = None; self.auto_bestlap_lap_number = None; self.auto_bestlap_time_s = None; self.live_best_reference_segments = {}; self.live_best_reference_lap = None; self.live_best_reference_time_s = None; self.live_summary.setRowCount(0); self.segment_table.setRowCount(0); self.zone_table.setRowCount(0); self.laps_table.setRowCount(0); self.lap_overview_table.setRowCount(0); self.live_lap_table.setRowCount(0) if hasattr(self, "live_lap_table") else None; self.compare_table.setRowCount(0); self.coach_text.clear(); self.limit_coach_text.clear() if hasattr(self, "limit_coach_text") else None;
-        self.input_table.setRowCount(0) if hasattr(self, "input_table") else None; self.input_coach_text.clear() if hasattr(self, "input_coach_text") else None; self.trackmap.set_samples([]);
-        self.heatmap.set_samples([]) if hasattr(self, 'heatmap') else None; self.refresh_lap_combos(); self.log.clear()
+        self.samples.clear(); self.lap_summaries.clear(); self.reference_lap = None; self.compare_lap = None; self.segment_deltas = []; self.manual_reference_lap = None; self.manual_compare_lap = None; self.auto_bestlap_export_path = None; self.auto_bestlap_lap_number = None; self.auto_bestlap_time_s = None; self.live_best_reference_segments = {}; self.live_best_reference_lap = None; self.live_best_reference_time_s = None; self.coach_text.clear(); self.limit_coach_text.clear() if hasattr(self, "limit_coach_text") else None;
+        self.input_table.setRowCount(0) if hasattr(self, "input_table") else None; self.input_coach_text.clear() if hasattr(self, "input_coach_text") else None; self.log.clear()
         self.status.setText("Gelöscht.")
         self.refresh_dashboard()
 
@@ -10349,69 +9452,6 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         if gf >= 0.08:
             return "leicht"
         return "OK"
-
-    def update_tire_table(self, s: Sample):
-        if not hasattr(self, "tire_table"):
-            return
-        rows = self.tire_rows_for_sample(s)
-        if self.tire_table.rowCount() != len(rows):
-            self.tire_table.setRowCount(len(rows))
-        notes = []
-        # 0.2.4: Im Spiel deaktivierte Kanäle als solche anzeigen statt Ruhe-Werte als Messwerte.
-        ch = self.telemetry_channels_active()
-        for r, (name, pressure, tl, tc, tr, carcass, wear, flat, grip_fract) in enumerate(rows):
-            avg_temp = (tl + tc + tr) / 3.0 if (tl or tc or tr) else 0.0
-            spread = tr - tl
-            flat_status = self.flatspot_status(flat, grip_fract, s.brake, s.speed_kmh, s)
-            hint = self.tire_setup_hint(tl, tc, tr, pressure, wear)
-            if hint and hint != "ok":
-                notes.append(f"{name}: {hint}")
-            vals = [
-                name,
-                f"{pressure:.1f}",
-                f"{pressure/100.0:.2f}" if pressure > 0 else "-",
-                f"{tl:.1f} °C",
-                f"{tc:.1f} °C",
-                f"{tr:.1f} °C",
-                f"{carcass:.1f} °C" if ch["carcass"] else "— (Spiel aus)",
-                f"{wear:.1f}" if ch["wear"] else "— (Spiel aus)",
-                flat_status,
-                hint if ch["wear"] else (hint + " | Wear: im Spiel deaktiviert" if hint else "Wear: im Spiel deaktiviert"),
-            ]
-            for c, v in enumerate(vals):
-                it = self.tire_table.item(r, c)
-                if it is None:
-                    self.tire_table.setItem(r, c, QTableWidgetItem(str(v)))
-                elif it.text() != str(v):
-                    it.setText(str(v))
-        _now = time.monotonic()
-        if _now - getattr(self, "_tire_resize_ts", 0.0) > 5.0:
-            self._tire_resize_ts = _now
-            self.tire_table.resizeColumnsToContents()
-        if hasattr(self, "tire_note"):
-            note_txt = " | ".join(notes[:4]) if notes else "Reifen im aktuellen Snapshot unauffällig. Für echte Analyse 3–5 Runden Stintdaten sammeln."
-            self.tire_note.setText(note_txt + " Flat/ABS-Anzeige: der echte Flatspot-Status hat Vorrang; bei aktivem ABS wird Sliding unter Bremse als ABS-Stress gewertet, ohne ABS als Lockup-Risiko.")
-
-    def _fill_live_summary(self, s: Sample):
-        vals = [
-            s.lap_number, f"{s.lap_dist_m:.1f} m", f"{s.speed_kmh:.1f} km/h", s.gear,
-            f"{s.fuel_l:.2f} L", fmt_lap_time(s.last_lap_time), fmt_lap_time(s.best_lap_time),
-            "invalid" if s.lap_invalidated else ("Pit" if s.in_pits else "ok")
-        ]
-        if self.live_summary.rowCount() != 1:
-            self.live_summary.setRowCount(1)
-        for c, v in enumerate(vals):
-            it = self.live_summary.item(0, c)
-            if it is None:
-                self.live_summary.setItem(0, c, QTableWidgetItem(str(v)))
-            elif it.text() != str(v):
-                it.setText(str(v))
-        if self.live_summary.columnWidth(0) < 60:
-            self.live_summary.resizeColumnsToContents()
-
-    def add_sample_to_table(self, s: Sample):
-        self._fill_live_summary(s)
-        self.update_tire_table(s)
 
     def samples_for_reference_lap(self) -> List[Sample]:
         if not self.reference_lap:
@@ -10558,61 +9598,6 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             s1 = duration / 3.0; s2 = duration / 3.0; s3 = duration / 3.0
         return s1, s2, s3, duration, lap.min_speed, lap.max_speed, lap.avg_speed
 
-    def update_lap_overview_table(self):
-        if not hasattr(self, "lap_overview_table"):
-            return
-        self.lap_overview_table.setRowCount(0)
-        rows = []
-        for lap in self.lap_summaries:
-            s1, s2, s3, dur, mn, mx, avg = self.lap_sector_overview(lap)
-            rows.append((lap, s1, s2, s3, dur, mn, mx, avg))
-        if not rows:
-            return
-        clean_rows = [r for r in rows if r[0].is_clean]
-        best_low = {}
-        worst_low = {}
-        best_high = {}
-        worst_high = {}
-        # Niedriger ist besser: Sektoren und Rundenzeit.
-        for idx in [1,2,3,4]:
-            vals = [r[idx] for r in clean_rows if r[idx] > 0]
-            if vals:
-                best_low[idx] = min(vals); worst_low[idx] = max(vals)
-        # Höher ist besser: Min/Max/Durchschnitt Speed.
-        for idx in [5,6,7]:
-            vals = [r[idx] for r in clean_rows if r[idx] > 0]
-            if vals:
-                best_high[idx] = max(vals); worst_high[idx] = min(vals)
-        for lap, s1, s2, s3, dur, mn, mx, avg in rows:
-            row = self.lap_overview_table.rowCount(); self.lap_overview_table.insertRow(row)
-            # 0.2.4: Unvollständige Runden zeigen keine übernommene Zeit mehr
-            # (Runde 11 stand mit der Zeit von Runde 10 in der Tabelle).
-            if not lap.is_complete:
-                vals = [f"Lap #{lap.lap_number}", "—", "—", "—", "—", f"{mn:.2f}", f"{mx:.2f}", f"{avg:.2f}"]
-            else:
-                vals = [f"Lap #{lap.lap_number}", fmt_lap_time(s1), fmt_lap_time(s2), fmt_lap_time(s3), fmt_lap_time(dur), f"{mn:.2f}", f"{mx:.2f}", f"{avg:.2f}"]
-            raw = [None, s1, s2, s3, dur, mn, mx, avg]
-            for c, v in enumerate(vals):
-                item = QTableWidgetItem(str(v))
-                item.setTextAlignment(Qt.AlignCenter)
-                if not lap.is_clean:
-                    item.setBackground(QColor(120, 80, 80, 120))
-                elif self.reference_lap and lap.lap_number == self.reference_lap.lap_number and c == 0:
-                    item.setBackground(QColor(80, 120, 80, 160))
-                    item.setText(f"Lap #{lap.lap_number} REF")
-                elif c in [1,2,3,4]:
-                    if c in best_low and abs(raw[c] - best_low[c]) < 0.001:
-                        item.setBackground(QColor(85, 150, 95, 170))
-                    elif c in worst_low and abs(raw[c] - worst_low[c]) < 0.001:
-                        item.setBackground(QColor(160, 85, 85, 160))
-                elif c in [5,6,7]:
-                    if c in best_high and abs(raw[c] - best_high[c]) < 0.001:
-                        item.setBackground(QColor(85, 150, 95, 170))
-                    elif c in worst_high and abs(raw[c] - worst_high[c]) < 0.001:
-                        item.setBackground(QColor(160, 85, 85, 160))
-                self.lap_overview_table.setItem(row, c, item)
-        self.lap_overview_table.resizeColumnsToContents()
-
     def lap_eval_ok(self, lap) -> bool:
         """0.2.31: Zaehlt eine Runde als auswertbar, wenn sie sauber ist ODER
         wenn 'Ungültige Runden in Auswertung' aktiviert ist (dann muessen sie
@@ -10635,10 +9620,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         try:
             if self.samples:
                 self.update_laps()
-                self.update_segments()
                 self.update_lap_compare()
-                self.update_heatmap()
-                self.update_telemetry_view()
                 self.update_coach_text()
                 self.update_input_coach()
                 self.refresh_dashboard()
@@ -10656,87 +9638,11 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             self.log.append(f"Manuell gewählte Referenz Lap {manual_ref.lap_number} ist nicht sauber ({manual_ref.reason}) - Referenz ignoriert, Auto-Referenz wird genutzt.")
             manual_ref = None
         self.reference_lap = manual_ref or (min(clean, key=lambda l: self.estimated_lap_time_from_speed(l.lap_number)) if clean else None)
-        self.update_lap_overview_table()
-        self.update_live_lap_table()  # 0.2.11
-        self.laps_table.setRowCount(0)
-        for lap in self.lap_summaries:
-            row = self.laps_table.rowCount(); self.laps_table.insertRow(row)
-            status = "REFERENZ" if self.reference_lap and lap.lap_number == self.reference_lap.lap_number else ("gültig" if lap.is_clean else ("ungültig (einbezogen)" if self.include_invalid_laps else "ausgeschlossen"))
-            ch = self.telemetry_channels_active()
-            vals = [
-                lap.lap_number, status, lap.reason, lap.samples, f"{lap.coverage_m:.1f}",
-                fmt_lap_time(self.lap_time_for_report(lap)) if lap.is_complete else "— (unvollständig)",
-                f"{lap.max_speed:.1f}", f"{lap.avg_speed:.1f}", f"{lap.max_brake:.3f}",
-                f"{lap.fuel_used_l:.3f}" if ch["fuel"] else "— (Spiel aus)",
-                f"{lap.start_m:.1f}", f"{lap.end_m:.1f}",
-                f"stand={int(lap.has_standstill)} pit={int(lap.in_pits)}"
-            ]
-            for c, v in enumerate(vals):
-                self.laps_table.setItem(row, c, QTableWidgetItem(str(v)))
-        self.laps_table.resizeColumnsToContents()
-        self.refresh_lap_combos()
         if self.reference_lap:
             mode = "manuell" if self.manual_reference_lap == self.reference_lap.lap_number else "Auto"
             self.log.append(f"Referenzrunde erkannt ({mode}): Lap {self.reference_lap.lap_number} | Avg {self.reference_lap.avg_speed:.1f} km/h | Fuel {self.reference_lap.fuel_used_l:.2f} L")
         else:
             self.log.append("Keine komplette saubere Referenzrunde erkannt. Bitte mindestens eine volle fliegende Runde aufzeichnen.")
-
-    def update_live_lap_table(self):
-        """0.2.11: kompakte Rundenliste in der Live-Ansicht im Results-Vorbild:
-        Zeit/S1/S2/S3 farbcodiert (gruen = beste, rot = schwaecheste saubere Runde),
-        Gap zur besten Runde, Fuel am Rundenende."""
-        if not hasattr(self, "live_lap_table"):
-            return
-        self.live_lap_table.setRowCount(0)
-        rows = []
-        for lap in self.lap_summaries:
-            s1, s2, s3, dur, mn, mx, avg = self.lap_sector_overview(lap)
-            rows.append((lap, s1, s2, s3, dur))
-        if not rows:
-            return
-        clean_rows = [r for r in rows if r[0].is_clean and r[0].is_complete]
-        bests = {}
-        worsts = {}
-        for idx in (1, 2, 3, 4):
-            vals = [r[idx] for r in clean_rows if r[idx] > 0]
-            if vals:
-                bests[idx] = min(vals)
-                worsts[idx] = max(vals)
-        cand = [r for r in clean_rows if r[4] > 0]
-        best = min(cand, key=lambda r: r[4]) if cand else None
-        best_no = best[0].lap_number if best else None
-        best_dur = best[4] if best else 0.0
-        for lap, s1, s2, s3, dur in rows:
-            row = self.live_lap_table.rowCount(); self.live_lap_table.insertRow(row)
-            if not lap.is_complete:
-                vals = ["Lap %d" % lap.lap_number, "\u2014", "\u2014", "\u2014", "\u2014", "\u2014", "\u2014"]
-                raw = [None, 0.0, 0.0, 0.0, 0.0, None, None]
-            else:
-                gap = (dur - best_dur) if (lap.is_clean and best_dur > 0 and dur > 0) else None
-                fuel_end = float(getattr(lap, "fuel_end_l", 0.0) or 0.0)
-                vals = [
-                    "Lap %d" % lap.lap_number,
-                    fmt_lap_time(dur), fmt_lap_time(s1), fmt_lap_time(s2), fmt_lap_time(s3),
-                    (fmt_lap_time(gap, signed=True) if gap is not None else "\u2014"),
-                    ("%.1f" % fuel_end if fuel_end > 0 else "\u2014"),
-                ]
-                raw = [None, s1, s2, s3, dur, gap, None]
-            for c, v in enumerate(vals):
-                item = QTableWidgetItem(str(v))
-                item.setTextAlignment(Qt.AlignCenter)
-                if not lap.is_clean:
-                    item.setBackground(QColor(120, 80, 80, 120))
-                elif best_no is not None and lap.lap_number == best_no:
-                    item.setBackground(QColor(80, 120, 80, 160))
-                elif c in (1, 2, 3, 4) and raw[c] and raw[c] > 0:
-                    if c in bests and abs(raw[c] - bests[c]) < 0.001:
-                        item.setBackground(QColor(85, 150, 95, 170))
-                    elif c in worsts and abs(raw[c] - worsts[c]) < 0.001:
-                        item.setBackground(QColor(160, 85, 85, 160))
-                if best_no is not None and lap.lap_number == best_no and c == 0:
-                    item.setText("Lap %d BEST" % lap.lap_number)
-                self.live_lap_table.setItem(row, c, item)
-        self.live_lap_table.resizeColumnsToContents()
 
     def _remember_session(self, path):
         """0.2.13: gespeicherten Report in den Sitzungs-Index uebernehmen
@@ -10765,230 +9671,6 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             save_sessions_index(idx)
         except Exception:
             pass
-
-    def refresh_sessions_table(self):
-        """0.2.13: gespeicherte Reports im Sitzungs-Browser listen."""
-        if not hasattr(self, "sessions_table"):
-            return
-        self.sessions_table.setRowCount(0)
-        idx = load_sessions_index()
-        names = idx.get("names", {}) if isinstance(idx, dict) else {}
-        meta = idx.get("meta", {}) if isinstance(idx, dict) else {}
-        try:
-            files = sorted(REPORT_DIR.glob("*.txt"), key=lambda p: p.stat().st_mtime, reverse=True)
-        except Exception:
-            files = []
-        import re as _re
-        changed = False  # 0.2.15: Rueckfuellung aelterer Sitzungen in sessions.json
-        for p in files:
-            m = meta.get(p.name, {})
-            if not isinstance(m, dict):
-                m = {}
-            if not (m.get("track") or m.get("vehicle") or m.get("runden") or m.get("bestzeit")):
-                parsed = parse_session_report_meta(p)
-                if parsed:
-                    m = dict(parsed)
-                    meta[p.name] = m
-                    changed = True
-            dm = _re.match(r"r3e_live_recorder_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})", p.name)
-            datum = str(m.get("datum", "") or "")
-            if (not datum) and dm:
-                datum = dm.group(3) + "." + dm.group(2) + "." + dm.group(1) + " " + dm.group(4) + ":" + dm.group(5)
-            if not datum:
-                datum = "\u2014"
-            vals = [
-                datum,
-                str(names.get(p.name, "") or ""),
-                str(m.get("track", "") or ""),
-                str(m.get("vehicle", "") or ""),
-                (str(m.get("runden", "")) if m.get("runden", "") != "" else ""),
-                str(m.get("bestzeit", "") or ""),
-            ]
-            row = self.sessions_table.rowCount(); self.sessions_table.insertRow(row)
-            for c, v in enumerate(vals):
-                it = QTableWidgetItem(str(v))
-                it.setTextAlignment(Qt.AlignCenter)
-                it.setData(Qt.UserRole, str(p))
-                self.sessions_table.setItem(row, c, it)
-        if changed:  # 0.2.15: einmalig ausgelesene Metadaten dauerhaft merken
-            idx["meta"] = meta
-            save_sessions_index(idx)
-        self.sessions_table.resizeColumnsToContents()
-
-    def _selected_session_file(self):
-        if not hasattr(self, "sessions_table"):
-            return None
-        r = self.sessions_table.currentRow()
-        if r < 0:
-            return None
-        it = self.sessions_table.item(r, 0)
-        if it is None:
-            return None
-        p = it.data(Qt.UserRole)
-        return Path(p) if p else None
-
-    def open_session_report(self):
-        """0.2.13: gespeicherten Report in einem Fenster anzeigen (Doppelklick)."""
-        p = self._selected_session_file()
-        if p is None or not p.is_file():
-            self.status.setText("Sitzungen: keine Zeile markiert.")
-            return
-        try:
-            txt = p.read_text(encoding="utf-8", errors="replace")
-        except Exception as e:
-            QMessageBox.warning(self, "Sitzungen", "Report konnte nicht gelesen werden: " + str(e))
-            return
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Sitzung: " + p.stem)
-        dlg.resize(860, 640)
-        lay = QVBoxLayout(dlg)
-        view = QTextEdit(); view.setReadOnly(True)
-        view.setPlainText(txt)
-        lay.addWidget(view, 1)
-        btns = QDialogButtonBox(QDialogButtonBox.Close)
-        btns.rejected.connect(dlg.reject)
-        lay.addWidget(btns)
-        dlg.show()
-
-    def rename_session(self):
-        """0.2.13: eigenen Namen fuer eine Aufzeichnung (sessions.json, Datei unangetastet)."""
-        p = self._selected_session_file()
-        if p is None:
-            self.status.setText("Sitzungen: keine Zeile markiert.")
-            return
-        idx = load_sessions_index()
-        names = idx.setdefault("names", {}) if isinstance(idx, dict) else {}
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Sitzung umbenennen")
-        lay = QVBoxLayout(dlg)
-        lay.addWidget(QLabel("Eigener Name f\u00fcr diese Aufzeichnung:"))
-        edit = QLineEdit(str(names.get(p.name, p.stem) or ""))
-        lay.addWidget(edit)
-        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        btns.accepted.connect(dlg.accept)
-        btns.rejected.connect(dlg.reject)
-        lay.addWidget(btns)
-        if dlg.exec() == QDialog.Accepted:
-            names[p.name] = edit.text().strip()
-            save_sessions_index(idx)
-            self.refresh_sessions_table()
-
-    def delete_session(self):
-        """0.2.16: gespeicherte Sitzung loeschen (Report-Datei + passende CSV + Index-Eintraege)."""
-        p = self._selected_session_file()
-        if p is None or not p.is_file():
-            self.status.setText("Sitzungen: keine Zeile markiert.")
-            return
-        msg = ("Diese Aufzeichnung wirklich löschen?\n\n" + p.name +
-               "\n\nDie zugehörige CSV wird mitgelöscht. Das kann nicht rückgängig gemacht werden.")
-        if QMessageBox.question(self, "Sitzung löschen", msg) != QMessageBox.Yes:
-            return
-        try:
-            p.unlink()
-        except Exception as e:
-            QMessageBox.warning(self, "Sitzung löschen", "Datei konnte nicht gelöscht werden: " + str(e))
-            return
-        # 0.2.16: passende CSV (gleicher Zeitstempel) mitloeschen
-        csv_candidate = CSV_DIR / ("r3e_live_recorder_samples_" + p.stem.replace("r3e_live_recorder_", "", 1) + ".csv")
-        try:
-            if csv_candidate.is_file():
-                csv_candidate.unlink()
-        except Exception:
-            pass
-        # 0.2.16: Eintraege aus dem Sitzungs-Index entfernen
-        idx = load_sessions_index()
-        names = idx.get("names", {}) if isinstance(idx, dict) else {}
-        meta = idx.get("meta", {}) if isinstance(idx, dict) else {}
-        names.pop(p.name, None)
-        meta.pop(p.name, None)
-        save_sessions_index(idx)
-        self.refresh_sessions_table()
-        self.status.setText("Sitzung gelöscht: " + p.name)
-
-    def load_session_into_views(self):
-        """0.2.17: alte Aufzeichnung aus der zugehoerigen CSV in die Live-Ansicht
-        laden, damit Reifen/Analyse/Runden/Vergleich/Heatmap die alte Sitzung zeigen."""
-        p = self._selected_session_file()
-        if p is None:
-            self.status.setText("Sitzungen: keine Zeile markiert.")
-            return
-        if self.recording:
-            QMessageBox.warning(self, "Sitzung laden", "Recording läuft gerade. Bitte erst stoppen (F8), danach laden.")
-            return
-        stamp = p.stem.replace("r3e_live_recorder_", "", 1)
-        csv_path = CSV_DIR / ("r3e_live_recorder_samples_" + stamp + ".csv")
-        if not csv_path.is_file():
-            QMessageBox.warning(self, "Sitzung laden", "Zu dieser Aufzeichnung fehlt die CSV (r3e_live_recorder_samples_" + stamp + "). Ohne CSV können die Reiter nicht gefüllt werden.")
-            return
-        msg = ("Diese Aufzeichnung in die Ansicht laden?\n\n" + p.name +
-               "\n\nDer aktuelle Datenpuffer wird im Programm ersetzt - Dateien bleiben unberührt.")
-        if QMessageBox.question(self, "Sitzung laden", msg) != QMessageBox.Yes:
-            return
-        try:
-            samples = load_samples_from_csv(csv_path)
-        except Exception as e:
-            QMessageBox.warning(self, "Sitzung laden", "CSV konnte nicht gelesen werden: " + str(e))
-            return
-        if not samples:
-            QMessageBox.warning(self, "Sitzung laden", "CSV enthält keine Samples.")
-            return
-        self.samples = samples
-        self.last_live_sample = samples[-1]  # Live-Karten/Reifen-Tab mit altem Stand füllen
-        self.recording_signature = None
-        self.manual_reference_lap = None
-        self.manual_compare_lap = None
-        self.compare_lap = None
-        self.update_laps()  # Referenz + Runden-/Live-Runden-Tabellen
-        ref_samples = self.samples_for_reference_lap()
-        self.trackmap.set_samples(ref_samples if ref_samples else self.samples)
-        self.trackmap.set_sector_info(self.official_sector_bounds())
-        self.update_segments()
-        self.update_lap_compare()
-        self.update_heatmap()
-        self.update_telemetry_view()  # 0.2.21
-        self.update_zone_table()
-        self.update_input_coach()
-        self.update_coach_text()
-        self.status.setText("Alte Sitzung geladen: " + p.name + " (" + str(len(samples)) + " Samples)")
-        self.log.append("Sitzung aus CSV geladen: " + p.name + " | Samples: " + str(len(samples)))
-
-    def update_segments(self):
-        self.segment_table.setRowCount(0)
-        if not self.samples:
-            return
-        source = self.samples_for_reference_lap() or [s for s in self.samples if not self.is_non_driving_sample(s)]
-        buckets = {}
-        for s in source:
-            if s.lap_dist_m < 0:
-                continue
-            key = int(s.lap_dist_m // 50) * 50
-            buckets.setdefault(key, []).append(s)
-        for idx, key in enumerate(sorted(buckets)):
-            rows = buckets[key]
-            if len(rows) < 2:
-                continue
-            speeds = [r.speed_kmh for r in rows]
-            brakes = [r.brake for r in rows]
-            thrs = [r.throttle for r in rows]
-            gears = [r.gear for r in rows if r.gear > 0]
-            gear_common = max(set(gears), key=gears.count) if gears else "-"
-            max_brake = max(brakes)
-            min_speed = min(speeds)
-            avg_speed = sum(speeds) / len(speeds)
-            avg_thr = sum(thrs) / len(thrs)
-            if max_brake > 0.25:
-                hint = "Bremszone"
-            elif avg_thr > 0.85:
-                hint = "Vollgas"
-            elif min_speed < 80:
-                hint = "Langsame Passage"
-            else:
-                hint = "neutral"
-            row = self.segment_table.rowCount(); self.segment_table.insertRow(row)
-            vals = [row + 1, f"{key}-{key+50}", len(rows), f"{avg_speed:.1f}", f"{min_speed:.1f}", f"{max_brake:.3f}", f"{avg_thr:.3f}", gear_common, hint]
-            for c, v in enumerate(vals):
-                self.segment_table.setItem(row, c, QTableWidgetItem(str(v)))
-        self.segment_table.resizeColumnsToContents()
 
     def samples_for_lap(self, lap_number: int) -> List[Sample]:
         rows = [s for s in self.samples if s.lap_number == lap_number and not self.is_non_driving_sample(s) and s.lap_dist_m >= 0 and s.speed_kmh > 1]
@@ -11215,25 +9897,12 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         return deltas
 
     def update_lap_compare(self):
-        self.compare_table.setRowCount(0)
         self.segment_deltas = self.build_lap_compare()
-        for d in self.segment_deltas:
-            row = self.compare_table.rowCount(); self.compare_table.insertRow(row)
-            vals = [
-                row + 1, f"{d.start_m}-{d.end_m}", f"Lap {d.compare_lap}", ("Extern" if d.reference_lap < 0 else f"Lap {d.reference_lap}"),
-                f"{d.delta_s:+.3f}", fmt_lap_time(d.cmp_time_s), fmt_lap_time(d.ref_time_s),
-                f"{d.cmp_avg_speed:.1f}", f"{d.ref_avg_speed:.1f}", f"{d.speed_delta:+.1f}",
-                f"{d.brake_delta:+.3f}", f"{d.throttle_delta:+.3f}", d.hint
-            ]
-            for c, v in enumerate(vals):
-                self.compare_table.setItem(row, c, QTableWidgetItem(str(v)))
-        self.compare_table.resizeColumnsToContents()
         if (self.reference_lap or self.external_reference) and self.compare_lap:
             total = sum(d.delta_s for d in self.segment_deltas)
             self.log.append(f"Rundenvergleich: Lap {self.compare_lap.lap_number} vs {self.reference_display_label()} | Segment-Delta gesamt {total:+.3f} s")
         elif self.reference_lap or self.external_reference:
             self.log.append("Rundenvergleich: keine gültige Vergleichsrunde vorhanden.")
-        self.update_zone_table()
 
     def official_sector_bounds(self) -> List[float]:
         """0.2.9: haeufigste offizielle Sektorgrenzen (Meter) aus den Samples.
@@ -11561,48 +10230,6 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             lines.append("")
             lines.append("Hinweis: 0.4.5.2 ist regelbasiert. Die spätere KI-Version soll Report, Telemetrie und Settings-Screenshots gemeinsam auswerten.")
         return lines
-
-    def update_heatmap(self):
-        if not hasattr(self, 'heatmap'):
-            return
-        ref_samples = self.external_reference_samples() if self.external_reference else (self.samples_for_reference_lap() if self.reference_lap else [])
-        cmp_samples = self.samples_for_lap(self.compare_lap.lap_number) if self.compare_lap else []
-        zones = self.grouped_problem_zones() if self.segment_deltas else []
-        if ref_samples and cmp_samples and self.segment_deltas:
-            self.heatmap.set_heatmap(self.samples, ref_samples, cmp_samples, self.segment_deltas, zones)
-            self.heatmap.set_sector_info(self.official_sector_bounds())  # 0.2.9
-            total = sum(d.delta_s for d in self.segment_deltas)
-            zeroish = abs(total) < 0.001 and not zones
-            self.heatmap_note.setText(
-                f"{self.reference_display_label()} vs Vergleich Lap {self.compare_lap.lap_number} | "
-                f"Delta gesamt {total:+.3f} s | Coach-Zonen: {len(zones)}"
-                + (" | Hinweis: identische/neue Auto-Referenz, daher keine roten Zonen." if zeroish else "")
-            )
-        else:
-            base = cmp_samples or ref_samples or self.samples
-            self.heatmap.set_samples(base)
-            self.heatmap.set_sector_info(self.official_sector_bounds())  # 0.2.9
-            reason = "Noch keine Heatmap möglich: Referenz und gültige Vergleichsrunde nötig."
-            if ref_samples and not cmp_samples:
-                reason = "Referenz vorhanden, aber noch keine gültige Vergleichsrunde für Heatmap."
-            elif cmp_samples and not ref_samples:
-                reason = "Vergleichsrunde vorhanden, aber keine Referenzdaten für Heatmap."
-            self.heatmap_note.setText(reason)
-
-    def update_zone_table(self):
-        if not hasattr(self, "zone_table"):
-            return
-        self.zone_table.setRowCount(0)
-        zones = self.grouped_problem_zones() if self.segment_deltas else []
-        for i, (start, end, total_loss, spd, brk, thr, cause, advice) in enumerate(zones[:8], 1):
-            prio = "HOCH" if total_loss >= 0.35 else ("MITTEL" if total_loss >= 0.18 else "NIEDRIG")
-            row = self.zone_table.rowCount(); self.zone_table.insertRow(row)
-            sec = self.sector_name_for_m(start)  # 0.2.9: offizieller Sektor der Zone
-            sec_txt = f" ({sec})" if sec else ""
-            vals = [f"Zone {i}", f"{start}-{end} m{sec_txt}", f"{total_loss:+.3f} s", prio, cause, advice, f"{spd:+.1f} km/h"]
-            for c, v in enumerate(vals):
-                self.zone_table.setItem(row, c, QTableWidgetItem(str(v)))
-        self.zone_table.resizeColumnsToContents()
 
     def update_coach_text(self):
         if not hasattr(self, 'coach_text'):
