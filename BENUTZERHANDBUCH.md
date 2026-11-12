@@ -24,6 +24,8 @@ Auf der [Releases-Seite](https://github.com/Pfoetiman76/pitboss-r3e/releases) st
 - **In der App:** Menü „Update" → „Nach Update suchen". Findet die App eine neuere Version, kann der Installer direkt heruntergeladen und gestartet werden. Die Prüfung unternimmt mehrere Versuche, falls GitHub kurzzeitig nicht antwortet.
 - **Im Browser:** Releases-Seite öffnen, Setup-Datei (ohne „Lite") herunterladen und einfach über die alte Installation laufen lassen. Einstellungen und Daten bleiben erhalten.
 
+Die Kopfleiste der App zeigt neben der Version ein farbiges Abzeichen: **VOLL** (türkis, Piper-Stimme enthalten) oder **LITE** (bernstein, ohne Piper). So siehst du jederzeit, welche Installationsvariante läuft.
+
 ## 2. Erste Schritte
 
 1. PitBoss starten, dann RaceRoom (oder umgekehrt – die Reihenfolge ist egal).
