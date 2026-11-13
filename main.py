@@ -33,7 +33,7 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.3.1 Beta"
+APP_VERSION = "0.4.3.2 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -3464,18 +3464,25 @@ class BlindSpotOverlayWindow(OverlayStyleMixin, QWidget):
 
     @staticmethod
     def _load_flip():
+        # 0.4.3.2: Marcels Test - die Seitenanzeige war verkehrt (links rechts).
+        # Die Zuordnung wird gedreht; ein alter gespeicherter "flip"-Wert wird
+        # sinnvoll uebernommen (invertiert), damit die Korrektur bei jedem
+        # bestehenden Setup greift. Neuer Schluessel "flip2" ab jetzt.
         try:
             if BLINDSPOT_CONFIG_PATH.exists():
-                return bool(json.loads(BLINDSPOT_CONFIG_PATH.read_text(encoding="utf-8")).get("flip", True))
+                data = json.loads(BLINDSPOT_CONFIG_PATH.read_text(encoding="utf-8"))
+                if "flip2" in data:
+                    return bool(data["flip2"])
+                return not bool(data.get("flip", True))  # Migration: alte Bedeutung umkehren
         except Exception:
             pass
-        return True  # 0.5.9.16: an echter Runde validiert - ungefippt war seitenverkehrt
+        return False  # 0.4.3.2: ungeflippt = linke Seite links ( vorher True)
 
     def set_flip(self, on):
         self._flip = bool(on)
         try:
             EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-            BLINDSPOT_CONFIG_PATH.write_text(json.dumps({"flip": self._flip}), encoding="utf-8")
+            BLINDSPOT_CONFIG_PATH.write_text(json.dumps({"flip2": self._flip}), encoding="utf-8")
         except Exception:
             pass
         self.update()
@@ -4603,10 +4610,17 @@ class LiveCoach(QObject):
             return
         if not self._is_straight(s):
             return
+        # 0.4.3.2: Läuft gerade eine Ansage des Kurven-Coachs (oder eine andere
+        # TTS-Ausgabe), wartet der Live-Coach: Der Satz bleibt stehen und wird
+        # beim nächsten Tick erneut versucht, sobald die Ausgabe frei ist.
+        # Der zeitkritische Kurven-Coach hat Vorrang und wird nie unterbrochen.
+        if getattr(self.main.tts, "is_busy", None) and self.main.tts.is_busy():
+            return
         try:
             if self.main.tts.is_available() and self.main.tts.speak(self.pending_text, interrupt=True):
                 self.last_spoken_ts = now
-        finally:
+                self.pending_text = None   # nur bei Erfolg verwerfen (0.4.3.2)
+        except Exception:
             self.pending_text = None
 
 
@@ -7122,7 +7136,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             win.set_flip(on)
         try:
             EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-            BLINDSPOT_CONFIG_PATH.write_text(json.dumps({"flip": on}), encoding="utf-8")
+            BLINDSPOT_CONFIG_PATH.write_text(json.dumps({"flip2": on}), encoding="utf-8")
         except Exception:
             pass
         try:
