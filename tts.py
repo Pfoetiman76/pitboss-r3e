@@ -32,6 +32,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 try:
     import winsound  # nur Windows
@@ -80,6 +81,7 @@ class SpeechEngine:
         self._piper_gen = 0
         self._piper_lock = threading.Lock()
         self._clip_cache = {}          # 0.4.8.5: vorsynthetisierte Countdown-Clips
+        self._busy_until = 0.0         # 0.4.3.2: Zeitstempel bis zu dem eine Ansage laeuft
 
         self._load_config()
         self._autodetect_bundled_piper()   # 0.4.8.0: mitgeliefertes Piper automatisch nutzen
@@ -166,6 +168,22 @@ class SpeechEngine:
 
     def is_available(self) -> bool:
         return self._backend is not None
+
+    def is_busy(self) -> bool:
+        """0.4.3.2: True, solange (nach eigener Buchhaltung) eine Ansage laeuft.
+        Der Live-Coach nutzt das, um den zeitkritischen Kurven-Coach ( Clips)
+        nicht zu unterbrechen: Er haelt seinen Satz zurueck, bis die Ausgabe frei ist."""
+        return time.time() < self._busy_until
+
+    @staticmethod
+    def _wav_duration(path: str) -> float:
+        """Laenge einer WAV in Sekunden (0 bei Fehlern)."""
+        try:
+            import wave
+            with wave.open(path, "rb") as w:
+                return w.getnframes() / float(w.getframerate() or 1)
+        except Exception:
+            return 0.0
 
     def backend(self) -> str:
         return self._backend or "none"
@@ -309,6 +327,7 @@ class SpeechEngine:
         return False
 
     def stop(self) -> None:
+        self._busy_until = 0.0
         # Piper
         with self._piper_lock:
             self._piper_gen += 1
@@ -376,6 +395,7 @@ class SpeechEngine:
             if winsound is not None:
                 self._apply_gain(wav)   # 0.4.2.9: Verstaerkung (gain), in-place
                 winsound.PlaySound(wav, winsound.SND_FILENAME | winsound.SND_ASYNC)
+                self._busy_until = time.time() + self._wav_duration(wav) + 0.1
         except Exception:
             return
 
@@ -428,6 +448,7 @@ class SpeechEngine:
                 # Clip-Cache bleibt unveraendert (gain aendert sich live).
                 play = self._apply_gain(wav, out=wav + ".gain.wav")
                 winsound.PlaySound(play, winsound.SND_FILENAME | winsound.SND_ASYNC)
+                self._busy_until = time.time() + self._wav_duration(play) + 0.1
                 return True
             except Exception:
                 pass
