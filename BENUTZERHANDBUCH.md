@@ -80,6 +80,7 @@ Läuft PitBoss **nicht**, bleibt die VR-Tafel unsichtbar. Für Diagnosen kann di
 ## 5. Coaches und Sprachausgabe
 
 - Der Live-Coach analysiert die Telemetrie und gibt Hinweise als Text und/oder Sprache (lokal, ohne Cloud; optional anbindbar).
+- **Coach-Priorität (ab 0.4.3.2):** Der Kurven-Coach (Bremspunkt-Ansagen) ist zeitkritisch und hat Vorrang. Läuft gerade eine seiner Ansagen, hält der Live-Coach seinen Hinweis zurück und spricht ihn erst, wenn die Sprachausgabe frei ist – der Satz geht nicht mehr verloren und überlagert keine Bremsansage mehr.
 - **Lautstärke:** Coach-Menü → „Sprachausgabe-Lautstärke …". Der Regler ist ein **Ziel-Pegel (20–100 %)**: Jede Ansage wird auf diesen Pegel angehoben (Spitzen-Normalisierung) – bei 100 % ist jede Ansage voll ausgesteuert, ohne Übersteuern. „Testansage" prüft sofort; die Einstellung wird automatisch gespeichert.
 - **Backend:** Der Dialog zeigt das aktive Backend. Der Voll-Installer liefert „piper" (natürliche Stimme, offline); ohne Piper greift die Windows-Systemstimme, dort wirkt der Ziel-Pegel als Stimmlautstärke.
 
