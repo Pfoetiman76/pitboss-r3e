@@ -33,7 +33,7 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.3.2 Beta"
+APP_VERSION = "0.4.3.3 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -1031,15 +1031,29 @@ def _remember_overlay_state(widget):
 def _save_open_overlays(widgets):
     """0.3.1.0: Beim Schliessen der App merken, welche Overlays offen waren
     und wo sie standen. Groesse/Skalierung/Deckkraft werden bereits laufend
-    ueber _remember_overlay_size/_remember_overlay_state gespeichert."""
+    ueber _remember_overlay_size/_remember_overlay_state gespeichert.
+    0.4.3.3: 'Nur VR'-Overlays sind am Monitor versteckt, aber trotzdem offen -
+    sie werden jetzt genauso gesichert (Marcels Meldung: Overlays nach Neustart
+    weg, obwohl der Modus VR/beides gespeichert ist)."""
     global _OVERLAY_SIZES
     try:
         if _OVERLAY_SIZES is None:
             _OVERLAY_SIZES = _load_overlay_sizes()
+        try:
+            _vronly = vr_overlay.vronly_classes(vr_overlay.load_config(VR_CONFIG_PATH))
+        except Exception:
+            _vronly = set()
         names = []
         for w in widgets:
             try:
-                if not w.isVisible():
+                # 0.4.3.3: offen = am Monitor sichtbar ODER 'Nur VR'
+                # (verstecktes Fenster wird trotzdem in die VR gespiegelt).
+                # Pit-Tafel, die nur gerade automatisch versteckt wurde,
+                # bleibt ebenfalls offen.
+                _open = w.isVisible() or (
+                    type(w).__name__ in _vronly
+                    and not getattr(w, "_pit_auto_hidden", False))
+                if not _open:
                     continue
                 names.append(type(w).__name__)
                 _OVERLAY_SIZES[type(w).__name__ + ":pos"] = [int(w.x()), int(w.y())]
@@ -7886,6 +7900,13 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 act.setChecked(bool(getattr(self, "flag_overlay_armed", False)))
             except Exception:
                 pass
+        # 0.4.3.3: Overlay-Sitzung sofort sichern - nach jedem Umschalten
+        # (Menue/Hotkey), nicht erst beim App-Ende. So uebersteht sie auch
+        # Absturz, Task-Manager oder den Neustart durchs Update.
+        try:
+            _save_open_overlays(self.all_overlay_windows())
+        except Exception:
+            pass
 
     def overlay_style_path(self):
         return str(EXPORT_DIR / "overlay_style.txt")

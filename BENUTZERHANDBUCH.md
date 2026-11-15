@@ -44,6 +44,7 @@ Daten (Einstellungen, Logs, Reports) liegen unter `Dokumente\PitBoss R3E`.
 - **Hintergrund-Deckkraft:** Alt + Mausrad in 5-%-Schritten – die Schrift bleibt immer voll lesbar.
 - **Reifen-Overlay** öffnet sich standardmäßig nicht mehr automatisch; falls gewünscht: Overlays → „Reifen-Overlay automatisch öffnen (bei Fahrt)" aktivieren.
 - **Anzeige-Modus je Overlay** (Kontextmenü des Overlays oder Verwaltungsfenster): „Beide", „nur Monitor" oder „nur VR". Nur-VR-Tafeln bleiben am Monitor unsichtbar, werden aber weiter aktualisiert und in der Brille gespiegelt.
+- **Sitzung wird gemerkt (ab 0.4.3.3):** Welche Overlays offen sind, ihre Position am Monitor sowie ihr Anzeige-Modus (Monitor/VR/beides) werden automatisch gesichert – auch Nur-VR-Tafeln. Beim nächsten Start von PitBoss ist nach dem Laden alles wieder offen, wo es war. Gesichert wird bei jeder Umschaltung, nicht erst beim Beenden; ein Absturz oder das Update mit Neustart verliert den Zustand daher nicht.
 
 ## 4. VR-Einrichtung (Virtual Desktop / VDXR)
 
