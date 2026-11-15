@@ -45,6 +45,13 @@ Daten (Einstellungen, Logs, Reports) liegen unter `Dokumente\PitBoss R3E`.
 - **Reifen-Overlay** öffnet sich standardmäßig nicht mehr automatisch; falls gewünscht: Overlays → „Reifen-Overlay automatisch öffnen (bei Fahrt)" aktivieren.
 - **Anzeige-Modus je Overlay** (Kontextmenü des Overlays oder Verwaltungsfenster): „Beide", „nur Monitor" oder „nur VR". Nur-VR-Tafeln bleiben am Monitor unsichtbar, werden aber weiter aktualisiert und in der Brille gespiegelt.
 - **Sitzung wird gemerkt (ab 0.4.3.3):** Welche Overlays offen sind, ihre Position am Monitor sowie ihr Anzeige-Modus (Monitor/VR/beides) werden automatisch gesichert – auch Nur-VR-Tafeln. Beim nächsten Start von PitBoss ist nach dem Laden alles wieder offen, wo es war. Gesichert wird bei jeder Umschaltung, nicht erst beim Beenden; ein Absturz oder das Update mit Neustart verliert den Zustand daher nicht.
+- **REC-Anzeige (ab 0.4.3.4):** Im Coach-Overlay zeigt eine deutlich vergrößerte rote REC-Kennung an, dass die Aufnahme läuft (ca. 10-fache Fläche, 26 px). Während einer Pause steht dort stattdessen eine gleich große gelbe PAUSE-Kennung.
+
+## 3a. Aufnahme (Recorder) und Hotkeys
+
+- **Start/Stopp:** Standard **F8** – Stop speichert Report und CSV automatisch. Alternativ der Aufnahme-Button im Hauptfenster.
+- **Pause/Fortsetzen (ab 0.4.3.4):** Standard **F3** – pausiert die laufende Aufnahme; weitere Samples werden nicht gesammelt, die bisherigen Runden bleiben erhalten. Erneutes F3 (oder Klick auf den Aufnahme-Button, der dann „AUFNAHME FORTSETZEN“ zeigt) setzt nahtlos fort. Nützlich für Boxenstopps oder Sicherheitswagen-Phasen.
+- **Alle Hotkeys** (auch Pause) sind frei belegbar: Einstellungen → Hotkeys. Sie funktionieren auch, während RaceRoom im Fokus ist.
 
 ## 4. VR-Einrichtung (Virtual Desktop / VDXR)
 
