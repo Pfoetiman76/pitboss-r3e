@@ -33,7 +33,7 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.3.3 Beta"
+APP_VERSION = "0.4.3.4 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -419,6 +419,7 @@ HOTKEY_ACTIONS = [
     ("tire_overlay", "Reifen-Overlay"),
     ("auto_bestlap", "Auto-Bestlap AN/AUS"),
     ("record", "Recording Start/Stop"),
+    ("record_pause", "Recording Pause/Weiter"),
     ("snapshot", "Snapshot"),
     ("overlay", "Coach-Overlay"),
     ("live_coach", "Live-Coach"),
@@ -428,6 +429,7 @@ HOTKEY_ACTIONS = [
 ]
 DEFAULT_HOTKEYS = {
     "tire_overlay": "F6", "auto_bestlap": "F7", "record": "F8", "snapshot": "F9",
+    "record_pause": "F3",
     "overlay": "F10", "live_coach": "F11", "brake_coach": "F12",
     "corner_overlay": "F5",
     "vr_arrange": "F4",
@@ -2517,8 +2519,11 @@ class OverlayWindow(OverlayStyleMixin, QWidget):
         if lab is None:
             return
         kind = getattr(self, "_status_kind", "warn")
-        lab.setStyleSheet("font-size:12px;font-weight:bold;color:%s;background:transparent;"
-                          % self._sem_color(kind))
+        # 0.4.3.4: REC (rot) und PAUSE (gelb) ca. 10x Flaeche (26 px statt 12 px),
+        # Marcels Wunsch; LIVE/WARTET bleiben kompakt.
+        _size = 26 if kind in ("bad", "pause") else 12
+        lab.setStyleSheet("font-size:%dpx;font-weight:bold;color:%s;background:transparent;"
+                          % (_size, self._sem_color(kind)))
 
     def _start_drag(self, event):
         try:
@@ -2569,8 +2574,12 @@ class OverlayWindow(OverlayStyleMixin, QWidget):
     def update_from_main(self, main):
         last = getattr(main, "last_live_sample", None) or (main.samples[-1] if getattr(main, "samples", None) else None)
         if main.recording:
-            self.compact_status.setText("● REC")
-            self._status_kind = "bad"; self._restyle_status()  # 0.4.9.7
+            if getattr(main, "recording_paused", False):
+                self.compact_status.setText("\u25cf PAUSE")  # 0.4.3.4: Pause-Zustand im Overlay
+                self._status_kind = "pause"; self._restyle_status()
+            else:
+                self.compact_status.setText("\u25cf REC")
+                self._status_kind = "bad"; self._restyle_status()  # 0.4.9.7 / 0.4.3.4 gross
         elif last:
             self.compact_status.setText("● LIVE")
             self.compact_status.setStyleSheet("font-size:12px;font-weight:bold;color:#3fb950;background:transparent;")
@@ -4904,6 +4913,7 @@ class Main(QMainWindow):
         self.external_reference = None
         self.use_external_reference = False
         self.recording = False
+        self.recording_paused = False  # 0.4.3.4: Pause-Hotkey (Standard F3)
         self.recording_signature = None
         self.rejected_sample_count = 0
         self.overlay_window = None
@@ -6618,7 +6628,11 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         w.set_info(track, self._corner_display_name(best), best.get("dir", ""), best_d)
 
     def toggle_recording(self):
-        if self.recording:
+        if self.recording and getattr(self, "recording_paused", False):
+            # 0.4.3.4: Klick auf den Aufnahme-Button waehrend der Pause
+            # setzt die Aufnahme fort, statt sie zu stoppen.
+            self.toggle_pause_recording()
+        elif self.recording:
             self.stop_recording()
         else:
             self.start_recording()
@@ -8129,7 +8143,10 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             pill.setText(text)
 
     def _set_rec_ui(self, on: bool):
-        self.btn_record.setText("\u25a0  AUFNAHME STOPPEN" if on else "\u25cf  AUFNAHME STARTEN")
+        if on and getattr(self, "recording_paused", False):
+            self.btn_record.setText("\u25b6  AUFNAHME FORTSETZEN")
+        else:
+            self.btn_record.setText("\u25a0  AUFNAHME STOPPEN" if on else "\u25cf  AUFNAHME STARTEN")
         self.btn_record.setProperty("rec", bool(on))
         self.btn_record.style().unpolish(self.btn_record); self.btn_record.style().polish(self.btn_record)
 
@@ -8386,6 +8403,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             ("shortcut_tire_overlay", "tire_overlay", self.toggle_tire_overlay_hotkey),
             ("shortcut_auto_bestlap", "auto_bestlap", self.toggle_auto_bestlap_hotkey),
             ("shortcut_record", "record", self.toggle_recording_hotkey),
+            ("shortcut_record_pause", "record_pause", self.toggle_pause_recording_hotkey),
             ("shortcut_snapshot", "snapshot", self.snapshot_hotkey),
             ("shortcut_overlay", "overlay", self.toggle_overlay_hotkey),
             ("shortcut_live_coach", "live_coach", self.toggle_live_coach_hotkey),
@@ -8411,6 +8429,34 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             self.stop_recording()
         else:
             self.start_recording()
+
+    def toggle_pause_recording_hotkey(self):
+        # 0.4.3.4: Pause/Weiter per Hotkey (Standard F3), gegen Doppeltrigger.
+        now = datetime.now().timestamp()
+        if now - getattr(self, "last_pause_hotkey_ts", 0.0) < 0.8:
+            return
+        self.last_pause_hotkey_ts = now
+        self.toggle_pause_recording()
+
+    def toggle_pause_recording(self):
+        """0.4.3.4: Laufende Aufnahme pausieren und spaeter fortsetzen.
+        Waehrend der Pause sammelt der Recorder KEINE Samples; die bisher
+        aufgezeichneten Runden bleiben erhalten. Fortsetzen haengt nahtlos
+        an (Report/CSV werden wie gehabt erst beim Stopp gespeichert)."""
+        if not self.recording:
+            self.log.append("Pause ignoriert: keine Aufnahme aktiv.")
+            return
+        self.recording_paused = not self.recording_paused
+        if self.recording_paused:
+            self.log.append("⏸ Aufnahme pausiert – " + self.hotkey_config.get("record_pause", "F3")
+                             + " oder der Aufnahme-Button setzt fort.")
+            self.status.setText("⏸ AUFNAHME PAUSIERT – " + self.hotkey_config.get("record_pause", "F3")
+                                + " setzt fort, " + self.hotkey_config.get("record", "F8") + " stoppt und speichert.")
+        else:
+            self.log.append("▶ Aufnahme fortgesetzt.")
+            self.status.setText("🔴 RECORDING AKTIV – " + self.hotkey_config.get("record", "F8")
+                                + " stoppt und speichert Report/CSV automatisch.")
+        self._set_rec_ui(True)
 
     def toggle_overlay_hotkey(self):
         # F10 kann durch App-Shortcut + Windows-Polling doppelt feuern.
@@ -8496,6 +8542,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             "tire_overlay": self.toggle_tire_overlay_hotkey,
             "auto_bestlap": self.toggle_auto_bestlap_hotkey,
             "record": self.toggle_recording_hotkey,
+            "record_pause": self.toggle_pause_recording_hotkey,
             "snapshot": self.snapshot_hotkey,
             "overlay": self.toggle_overlay_hotkey,
             "live_coach": self.toggle_live_coach_hotkey,
@@ -9371,6 +9418,11 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 self.log.append("Snapshot verworfen: anderes Fahrzeug/andere Klasse als Recording-Lock.")
             self.status.setText(f"Sample verworfen – Recording gelockt auf {self.sample_vehicle_label(self.recording_signature)}")
             return
+        # 0.4.3.4: Pausierte Aufnahme sammelt keine Samples.
+        if getattr(self, "recording", False) and getattr(self, "recording_paused", False):
+            self.status.setText("⏸ AUFNAHME PAUSIERT – " + self.hotkey_config.get("record_pause", "F3")
+                                + " setzt fort.")
+            return
         self.samples.append(s)
         # 0.2.4: Eingefrorene Telemetrie erkennen (Spiel beendet/Session verlassen):
         # RaceRoom liefert dann unveränderte Rohwerte weiter. Nach ~5 s identischen
@@ -9400,7 +9452,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             return
         self.samples.clear(); self.lap_summaries.clear(); self.reference_lap = None; self.compare_lap = None; self.segment_deltas = []; self.manual_reference_lap = None; self.manual_compare_lap = None; self.auto_bestlap_export_path = None; self.auto_bestlap_lap_number = None; self.auto_bestlap_time_s = None; self.live_best_reference_segments = {}; self.live_best_reference_lap = None; self.live_best_reference_time_s = None; self.recording_signature = None; self.rejected_sample_count = 0; self.pending_switch_signature = None; self.pending_switch_count = 0; self.coach_text.clear(); self.limit_coach_text.clear() if hasattr(self, "limit_coach_text") else None;
         self.input_table.setRowCount(0) if hasattr(self, "input_table") else None; self.input_coach_text.clear() if hasattr(self, "input_coach_text") else None
-        self.recording = True; self.timer.start()
+        self.recording = True; self.recording_paused = False; self.timer.start()
         self.snapshot(silent=True)  # 0.4.8.1: Snapshot automatisch bei Start
         self._set_rec_ui(True)
         self.log.append("🔴 Recording gestartet: Auto-Report/CSV werden beim Stop automatisch gespeichert.")
@@ -9427,7 +9479,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         if not self.recording:
             self.log.append("Recording ist nicht aktiv – Stop ignoriert.")
             return
-        self.recording = False; self.timer.stop()
+        self.recording = False; self.recording_paused = False; self.timer.stop()
         self._set_rec_ui(False)
         self.log.append(f"Recording gestoppt. Samples: {len(self.samples)} | verworfen wegen Fahrzeugwechsel/ungültig: {self.rejected_sample_count}")
         self.update_laps()
