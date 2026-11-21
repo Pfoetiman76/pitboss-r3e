@@ -33,7 +33,7 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.3.4 Beta"
+APP_VERSION = "0.4.4.0 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -4950,6 +4950,12 @@ class Main(QMainWindow):
         self._tire_overlay_autoshown = False
         self.auto_bestlap_export_enabled = True
         self.auto_switch_recording_enabled = True  # 0.5.9.24: Auto-Stop/Start bei Strecken-/Fahrzeugwechsel
+        self.auto_record_enabled = True  # 0.4.4.0: Auto-Aufnahme - startet von selbst bei Telemetrie
+        self._manual_stop_latch = False  # 0.4.4.0: manueller Stopp schaltet Auto-Aufnahme fuer diesen App-Lauf aus
+        self._freeze_paused = False  # 0.4.4.0: Auto-Pause durch eingefrorene Telemetrie (Spiel-Pause)
+        self._auto_session_type = None  # 0.4.4.0: Session-Typ-Ueberwachung (z. B. Training -> Rennen)
+        self._auto_session_pending = None
+        self._auto_session_count = 0
         self.include_invalid_laps = bool(load_analysis_config().get("include_invalid_laps", False))  # 0.2.31
         self.pending_switch_signature = None
         self.pending_switch_count = 0
@@ -5214,6 +5220,11 @@ class Main(QMainWindow):
         self.act_auto_switch = _more.addAction("Auto-Wechsel bei Strecke/Fahrzeug")
         self.act_auto_switch.setCheckable(True)
         self.act_auto_switch.triggered.connect(lambda _c=False: self.btn_auto_switch.click())
+        # 0.4.4.0: Automatische Aufnahme (an/aus)
+        self.act_auto_record = _more.addAction("Automatische Aufnahme (Start bei Telemetrie)")
+        self.act_auto_record.setCheckable(True)
+        self.act_auto_record.setChecked(True)
+        self.act_auto_record.toggled.connect(self.toggle_auto_record)
         _more.addAction("Live-Telemetrie-Log (Debug) ein/aus", self.btn_live_log.click)
         self.act_include_invalid = _more.addAction("Ungültige Runden in Auswertung (inkl. Referenz/Vergleich)")  # 0.2.31
         self.act_include_invalid.setCheckable(True)
@@ -6633,8 +6644,12 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             # setzt die Aufnahme fort, statt sie zu stoppen.
             self.toggle_pause_recording()
         elif self.recording:
+            # 0.4.4.0: Manueller Stopp (Button/Taste) schaltet die automatische
+            # Aufnahme fuer diesen App-Lauf aus; im Menue wieder aktivierbar.
+            self._manual_stop_latch = True
             self.stop_recording()
         else:
+            self._manual_stop_latch = False
             self.start_recording()
 
     def _ai_config_path(self):
@@ -7965,7 +7980,11 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         weil der Spiegel versteckte Fenster dieses Modus absichtlich
         mitnimmt."""
         try:
-            in_pit = bool(getattr(s, "in_pits", False)) or int(getattr(s, "pit_state", 0) or 0) in (1, 2, 3, 4)
+            # 0.4.4.0: Nur noch oeffnen, wenn das Auto physisch in der Box steht
+            # oder die Boxeneinfahrt faehrt. pit_state 1 (Stopp angefordert) und
+            # 4 (Ausfahrt) fuehrten bei Direktstart auf der Strecke zu einem
+            # haengenden Overlay und sind jetzt bewusst keine Ausloeser mehr.
+            in_pit = bool(getattr(s, "in_pits", False)) or int(getattr(s, "pit_state", 0) or 0) in (2, 3)
         except Exception:
             return
         win = self.pit_overlay_window
@@ -8197,7 +8216,8 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         zones = self.grouped_problem_zones() if self.segment_deltas else []
         if zones:
             z = zones[0]
-            self._dash_focus_txt = f"Zone 1 | {z[0]}-{z[1]} m ({self.sector_name_for_m(z[0]) or '?'}) | {z[2]:+.3f} s"
+            _cz = self.corner_zone_label(float(z[0]), float(z[1]))  # 0.4.4.0: Kurvenname statt reiner Meter
+            self._dash_focus_txt = "Zone 1 | " + ((_cz + " | ") if _cz else "") + f"{z[0]}-{z[1]} m ({self.sector_name_for_m(z[0]) or '?'}) | {z[2]:+.3f} s"
         else:
             self._dash_focus_txt = "nach Rundenvergleich"
         lines = self.coach_report_lines()
@@ -8344,6 +8364,21 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         self.set_auto_switch_ui()
         self.log.append("Auto-Wechsel-Neustart " + ("aktiviert" if self.auto_switch_recording_enabled else "deaktiviert"))
 
+    def toggle_auto_record(self, checked=None):  # 0.4.4.0
+        self.auto_record_enabled = (not getattr(self, "auto_record_enabled", True)) if checked is None else bool(checked)
+        if self.auto_record_enabled:
+            self._manual_stop_latch = False
+            self._auto_session_pending = None
+            self._auto_session_count = 0
+        _act = getattr(self, "act_auto_record", None)
+        if _act is not None and _act.isChecked() != self.auto_record_enabled:
+            _act.blockSignals(True); _act.setChecked(self.auto_record_enabled); _act.blockSignals(False)
+        if self.auto_record_enabled:
+            self.log.append("Automatische Aufnahme aktiviert: Sie startet von selbst, sobald Telemetrie aus dem Spiel kommt.")
+        else:
+            self.log.append("Automatische Aufnahme deaktiviert: Start nur noch per Button/Aufnahme-Taste.")
+            self.status.setText("Auto-Aufnahme AUS.")
+
     def toggle_auto_bestlap_hotkey(self):
         # F7 kann durch Stream Deck + App-Shortcut + Windows-Polling doppelt feuern.
         # Debounce verhindert AN+AUS im selben Tastendruck.
@@ -8446,6 +8481,8 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         if not self.recording:
             self.log.append("Pause ignoriert: keine Aufnahme aktiv.")
             return
+        if self.recording_paused:
+            self._freeze_paused = False  # 0.4.4.0: manuelles Fortsetzen loescht eine Auto-Pause
         self.recording_paused = not self.recording_paused
         if self.recording_paused:
             self.log.append("⏸ Aufnahme pausiert – " + self.hotkey_config.get("record_pause", "F3")
@@ -9198,6 +9235,38 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             self._live_err_ts = 0.0
         self._last_read_ok_ts = time.monotonic()
         self.last_live_sample = s
+        # 0.4.4.0: Automatische Aufnahme (standardmaessig an). Startet von selbst,
+        # sobald echte Telemetrie aus dem Spiel kommt (losgefahren genuegt).
+        # Bei Session-Wechsel (Session-Typ, z. B. Training -> Rennen) wird die alte
+        # Session automatisch gespeichert und die neue Aufnahme gestartet. Ein
+        # manueller Stopp (Aufnahme-Taste/Button) schaltet die Automatik fuer
+        # diesen App-Lauf aus, bis sie im Menue neu aktiviert wird.
+        try:
+            if getattr(self, "auto_record_enabled", True) and not getattr(self, "_manual_stop_latch", False):
+                if not self.recording and not self.is_prelock_non_driving_sample(s):
+                    self.log.append("Auto-Aufnahme: Telemetrie aus dem Spiel erkannt - Aufnahme startet automatisch.")
+                    self.start_recording()
+                elif self.recording and not getattr(self, "recording_paused", False):
+                    _st = int(getattr(s, "session_type", 0) or 0)
+                    if getattr(self, "_auto_session_type", None) is None:
+                        self._auto_session_type = _st
+                    elif _st != self._auto_session_type:
+                        if getattr(self, "_auto_session_pending", None) == _st:
+                            self._auto_session_count = getattr(self, "_auto_session_count", 0) + 1
+                        else:
+                            self._auto_session_pending = _st
+                            self._auto_session_count = 1
+                        if self._auto_session_count >= AUTO_SWITCH_DEBOUNCE_SAMPLES:
+                            self.log.append("Auto-Aufnahme: Session-Wechsel erkannt (z. B. Training -> Rennen) - Session wird gespeichert, neue Aufnahme startet.")
+                            self._auto_session_pending = None
+                            self._auto_session_count = 0
+                            self.stop_recording()
+                            self.start_recording()
+                    else:
+                        self._auto_session_pending = None
+                        self._auto_session_count = 0
+        except Exception as _e:
+            self.log.append(f"Auto-Aufnahme-Fehler (ignoriert, bitte melden): {type(_e).__name__}: {_e}")
         try:
             set_tire_temp_window(s.tire_temp_cold_c, s.tire_temp_opt_c, s.tire_temp_hot_c)
         except Exception:
@@ -9398,7 +9467,8 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 topic = "Bremse lösen"
             else:
                 topic = "Linie ruhiger"
-            self.live_coach_line = f"{k}-{k+50} m {d:+.2f}s · {topic}"
+            _zone = self.corner_zone_txt(float(k), float(k + 50))  # 0.4.4.0: Kurvennamen statt Meter, wenn verfuegbar
+            self.live_coach_line = f"{_zone} {d:+.2f}s · {topic}"
         else:
             self.live_coach_line = "aktuell ok"
 
@@ -9418,27 +9488,41 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 self.log.append("Snapshot verworfen: anderes Fahrzeug/andere Klasse als Recording-Lock.")
             self.status.setText(f"Sample verworfen – Recording gelockt auf {self.sample_vehicle_label(self.recording_signature)}")
             return
-        # 0.4.3.4: Pausierte Aufnahme sammelt keine Samples.
-        if getattr(self, "recording", False) and getattr(self, "recording_paused", False):
-            self.status.setText("⏸ AUFNAHME PAUSIERT – " + self.hotkey_config.get("record_pause", "F3")
-                                + " setzt fort.")
-            return
-        self.samples.append(s)
-        # 0.2.4: Eingefrorene Telemetrie erkennen (Spiel beendet/Session verlassen):
-        # RaceRoom liefert dann unveränderte Rohwerte weiter. Nach ~5 s identischen
-        # Werten wird das Recording automatisch gestoppt, statt endlos Leerlauf zu sammeln.
+        # 0.4.4.0: Eingefrorene Telemetrie (Spiel-Pause, Session-Ende) stoppt die
+        # Aufnahme nicht mehr komplett, sondern pausiert sie automatisch und setzt
+        # sie fort, sobald sich die Werte wieder bewegen (gleiche Session). Manuell
+        # per Taste pausierte Aufnahmen werden dadurch NICHT automatisch fortgesetzt -
+        # dafuer trennt _freeze_paused Auto-Pause von der manuellen Pause (F3).
+        # Die Freeze-Erkennung laeuft bewusst VOR der Pausen-Pruefung, damit eine
+        # Auto-Pause auch ohne neue Samples wiederaufgenommen werden kann.
         _frozen_key = (round(s.pos_x, 3), round(s.pos_z, 3), round(s.speed_kmh, 2), round(s.steering, 4), s.lap_dist_m)
         if _frozen_key == getattr(self, "_frozen_last_key", None):
             self._frozen_count = getattr(self, "_frozen_count", 0) + 1
         else:
             self._frozen_count = 0
             self._frozen_logged = False
+            if getattr(self, "_freeze_paused", False) and self.recording:
+                self._freeze_paused = False
+                self.recording_paused = False
+                self.log.append("Telemetrie laeuft wieder - Aufnahme automatisch fortgesetzt.")
+                self._set_rec_ui(True)
         self._frozen_last_key = _frozen_key
         if self._frozen_count >= 45 and not getattr(self, "_frozen_logged", False):
             self._frozen_logged = True
-            self.log.append("⚠️ Telemetrie eingefroren: identische Rohwerte über ~5 s (Spiel beendet/Session verlassen). Recording wird gestoppt.")
-            if self.recording:
-                self.stop_recording()
+            if self.recording and not getattr(self, "recording_paused", False):
+                self._freeze_paused = True
+                self.recording_paused = True
+                self.log.append("Telemetrie eingefroren (Spiel-Pause/Session beendet) - Aufnahme automatisch pausiert. Sie laeuft von selbst weiter, sobald du weiterspielst.")
+                self._set_rec_ui(True)
+        # 0.4.3.4: Pausierte Aufnahme sammelt keine Samples.
+        if getattr(self, "recording", False) and getattr(self, "recording_paused", False):
+            if getattr(self, "_freeze_paused", False):
+                self.status.setText("AUFNAHME AUTO-PAUSIERT (Spiel-Pause) - laeuft automatisch weiter, sobald du weiterspielst.")
+            else:
+                self.status.setText("⏸ AUFNAHME PAUSIERT – " + self.hotkey_config.get("record_pause", "F3")
+                                    + " setzt fort.")
+            return
+        self.samples.append(s)
         if not silent:
             self.status.setText(f"Letzter Snapshot: {s.track} | {s.vehicle_name} | {s.speed_kmh:.1f} km/h | Gear {s.gear} | Fuel {s.fuel_l:.2f} L")
             self.refresh_dashboard()
@@ -9479,7 +9563,9 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         if not self.recording:
             self.log.append("Recording ist nicht aktiv – Stop ignoriert.")
             return
-        self.recording = False; self.recording_paused = False; self.timer.stop()
+        self.recording = False; self.recording_paused = False; self._freeze_paused = False
+        self._auto_session_type = None; self._auto_session_pending = None; self._auto_session_count = 0
+        self.timer.stop()
         self._set_rec_ui(False)
         self.log.append(f"Recording gestoppt. Samples: {len(self.samples)} | verworfen wegen Fahrzeugwechsel/ungültig: {self.rejected_sample_count}")
         self.update_laps()
@@ -10049,6 +10135,40 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             return "S3"
         return ""
 
+    def corner_name_for_layout_m(self, layout_id: int, m: float) -> str:
+        """0.4.4.0: echter Kurvenname (Kurven-Datenbank nach layout_id) fuer eine
+        Meter-Position; '' = Layout unbekannt oder keine Kurve dort."""
+        lid = int(layout_id or 0)
+        if not lid:
+            return ""
+        sections = CORNER_SECTIONS.get(lid)
+        if not sections:
+            return ""
+        for sec in sections:
+            if sec[0] <= m <= sec[1] and sec[2] != "Start-Finish":
+                return sec[2]
+        return ""
+
+    def corner_zone_label(self, start_m: float, end_m: float) -> str:
+        """0.4.4.0: Meter-Angaben des Coaches nach Moeglichkeit durch Kurvennamen
+        ersetzen ('Kurve 3' statt '250-300 m'). '' = keine Namen verfuegbar."""
+        s_last = getattr(self, "last_live_sample", None) or (self.samples[-1] if self.samples else None)
+        lid = int(getattr(s_last, "layout_id", 0) or 0) if s_last is not None else 0
+        if not lid:
+            return ""
+        a = self.corner_name_for_layout_m(lid, start_m)
+        b = self.corner_name_for_layout_m(lid, end_m)
+        if a and b:
+            return a if a == b else f"{a} / {b}"
+        return a or b
+
+    def corner_zone_txt(self, start_m: float, end_m: float) -> str:
+        """0.4.4.0: Anzeige-Text 'Kurve 3 (250-300 m)' mit Namen, sonst reine Meter."""
+        name = self.corner_zone_label(start_m, end_m)
+        if name:
+            return f"{name} ({int(round(start_m))}-{int(round(end_m))} m)"
+        return f"{int(round(start_m))}-{int(round(end_m))} m"
+
     def lap_compare_report_lines(self) -> List[str]:
         if not self.segment_deltas:
             self.update_lap_compare()
@@ -10081,7 +10201,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         if not top_losses:
             lines.append("Keine einzelnen Problemsektoren > +0.10 s erkannt.")
         for d in top_losses:
-            lines.append(f"{d.start_m}-{d.end_m} m: {d.delta_s:+.3f} s | {d.hint} | Speed {d.speed_delta:+.1f} km/h | Brake {d.brake_delta:+.3f} | Gas {d.throttle_delta:+.3f}")
+            lines.append(f"{self.corner_zone_txt(d.start_m, d.end_m)}: {d.delta_s:+.3f} s | {d.hint} | Speed {d.speed_delta:+.1f} km/h | Brake {d.brake_delta:+.3f} | Gas {d.throttle_delta:+.3f}")
 
         grouped = self.grouped_problem_zones()
         lines.append("")
@@ -10091,7 +10211,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         for i, (start, end, total_loss, spd, brk, thr, cause, advice) in enumerate(grouped[:8], 1):
             sec = self.sector_name_for_m(start)  # 0.2.9: offizieller Sektor der Zone
             sec_txt = f" ({sec})" if sec else ""
-            lines.append(f"{i}. {start}-{end} m{sec_txt} | Summe {total_loss:+.3f} s | {cause} | Speed {spd:+.1f} km/h | Brake {brk:+.3f} | Gas {thr:+.3f}")
+            lines.append(f"{i}. {self.corner_zone_txt(start, end)}{sec_txt} | Summe {total_loss:+.3f} s | {cause} | Speed {spd:+.1f} km/h | Brake {brk:+.3f} | Gas {thr:+.3f}")
 
         # 0.2.9: offizielle Spiel-Sektoren (sector_start_factors) statt nur schematischem Raster
         bounds = self.official_sector_bounds()
@@ -10286,9 +10406,9 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         if zones:
             main = zones[0]
             if main[2] >= 0.60:
-                score += 2; reasons.append(f"großer Zeitverlust in Zone {main[0]}-{main[1]} m ({main[2]:+.3f}s)")
+                score += 2; reasons.append(f"großer Zeitverlust in {self.corner_zone_txt(main[0], main[1])} ({main[2]:+.3f}s)")
             elif main[2] >= 0.25:
-                score += 1; reasons.append(f"relevanter Zeitverlust in Zone {main[0]}-{main[1]} m ({main[2]:+.3f}s)")
+                score += 1; reasons.append(f"relevanter Zeitverlust in {self.corner_zone_txt(main[0], main[1])} ({main[2]:+.3f}s)")
             # low speed delta with higher brake is often over-slowing, not true limit.
             if main[3] < -8 and main[4] > 0.08:
                 score -= 1; reasons.append("Referenzvergleich deutet eher auf zu viel/zu lange Bremse als echtes Limit hin")
@@ -10439,8 +10559,8 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         return result
 
     def autosave_feedback(self, res: dict):
-        """0.2.30: Klartext nach dem Stopp - Statusleiste UND Dialog mit
-        'Ordner oeffnen'. Nur bei echtem Dialog-Start (nicht beim App-Schliessen)."""
+        """0.4.4.0: Nach dem Stopp nur noch Statusleiste + Log (das Popup stoerte im
+        Rennfluss). Ein Dialog erscheint NUR noch bei echten Speicherfehlern."""
         try:
             if not res:
                 return
@@ -10479,16 +10599,12 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                     f"CSV: {'OK - ' + str(res.get('csv_path')) if res.get('csv_ok') else 'FEHLER - ' + cerr}\n\n"
                     f"Ziel-Ordner: {REPORT_DIR.resolve()}"
                 )
-            if getattr(self, "_app_closing", False):
-                return  # 0.2.29: beim App-Schliessen keinen Dialog blockieren
-            box = QMessageBox(self)
-            box.setWindowTitle("Aufzeichnung gestoppt")
-            box.setText(msg)
-            btn_open = box.addButton("Ordner öffnen", QMessageBox.ActionRole)
-            box.addButton("OK", QMessageBox.AcceptRole)
-            box.exec()
-            if box.clickedButton() is btn_open:
-                QDesktopServices.openUrl(QUrl.fromLocalFile(str(REPORT_DIR.resolve())))
+            # 0.4.4.0: Kein Popup mehr nach dem regulaeren Stopp. Statuszeile und
+            # Log genuegen; ein Dialog erscheint nur noch bei echten Speicherfehlern
+            # (und auch dann nicht beim App-Schliessen).
+            _is_error = (not res.get("skipped")) and not (bool(res.get("report_ok")) and bool(res.get("csv_ok")))
+            if _is_error and not getattr(self, "_app_closing", False):
+                QMessageBox.warning(self, "Auto-Save", msg)
         except Exception as e:
             try:
                 self.log.append(f"Auto-Save-Feedback fehlgeschlagen: {type(e).__name__}: {e}")
@@ -11299,6 +11415,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
