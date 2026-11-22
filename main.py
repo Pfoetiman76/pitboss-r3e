@@ -33,7 +33,7 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.4.2 Beta"
+APP_VERSION = "0.4.4.3 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -105,10 +105,45 @@ FEEDBACK_DIR = EXPORT_DIR / "feedback"  # 0.2.33: Beta-Tester-Feedback (offline 
 FUEL_HISTORY_PATH = EXPORT_DIR / "fuel_history.json"  # 0.3.1.3: Verbrauch pro Strecke/Auto fuer den Sprit-Rechner
 
 
+def _atomic_write_json(path, data, indent=2, ensure_ascii=False) -> bool:
+    """0.4.4.3: JSON-Datei atomar schreiben - vor dem Ueberschreiben die
+    letzte gueltige Fassung als .bak sichern, dann .tmp + os.replace.
+    Ein unterbrochener Schreibvorgang (Update-Beenden, Absturz, Stromausfall)
+    kann die Datei so nicht beschaedigen. Gilt fuer alle Nutzer-Configs
+    (Hotkeys, VR, Ansicht, Analysen, Profile, Kurvennamen, ...)."""
+    try:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if p.exists():
+                shutil.copy2(p, str(p) + ".bak")
+        except Exception:
+            pass
+        tmp = str(p) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=indent, ensure_ascii=ensure_ascii)
+        os.replace(tmp, p)
+        return True
+    except Exception:
+        return False
+
+
+def _load_json_bak(path):
+    """0.4.4.3: JSON lesen; ist die Datei beschaedigt oder fehlt sie, wird die
+    .bak-Sicherung probiert. Rueckgabe None, wenn beides scheitert."""
+    p = Path(path)
+    for cand in (p, Path(str(p) + ".bak")):
+        try:
+            return json.loads(cand.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+    return None
+
+
 def load_fuel_history() -> dict:
     """0.3.1.3: {\"Strecke|Auto\": {\"fuel_l\": [...], \"lap_s\": [...], ...}} laden."""
     try:
-        raw = json.loads(FUEL_HISTORY_PATH.read_text(encoding="utf-8"))
+        raw = _load_json_bak(FUEL_HISTORY_PATH)
         return raw if isinstance(raw, dict) else {}
     except Exception:
         return {}
@@ -118,15 +153,14 @@ def save_fuel_history(data: dict) -> bool:
     """0.3.1.3: Verbrauchs-Historie in Dokumente\\\\PitBoss R3E\\\\fuel_history.json speichern."""
     try:
         EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-        FUEL_HISTORY_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        return True
+        return _atomic_write_json(FUEL_HISTORY_PATH, data)
     except Exception:
         return False
 
 def load_analysis_config() -> dict:
     """0.2.31: {"include_invalid_laps": bool} laden; ungueltig -> Standard."""
     try:
-        raw = json.loads(ANALYSIS_CONFIG_PATH.read_text(encoding="utf-8"))
+        raw = _load_json_bak(ANALYSIS_CONFIG_PATH)
         if isinstance(raw, dict):
             return raw
     except Exception:
@@ -136,9 +170,7 @@ def load_analysis_config() -> dict:
 def save_analysis_config(cfg: dict) -> bool:
     """0.2.31: Auswertungs-Optionen in Dokumente\\PitBoss R3E\\analysis_config.json speichern."""
     try:
-        EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-        ANALYSIS_CONFIG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
-        return True
+        return _atomic_write_json(ANALYSIS_CONFIG_PATH, cfg)
     except Exception:
         return False
 
@@ -149,7 +181,7 @@ SIMPLE_VIEWS = ("Dashboard", "Coach")
 def load_ui_layout() -> bool:
     """0.2.10: True = Einfache Ansicht (Standard), False = Experte mit allen Ansichten."""
     try:
-        raw = json.loads(UI_LAYOUT_PATH.read_text(encoding="utf-8"))
+        raw = _load_json_bak(UI_LAYOUT_PATH)
         if isinstance(raw, dict):
             return bool(raw.get("simple", True))
     except Exception:
@@ -159,9 +191,7 @@ def load_ui_layout() -> bool:
 def save_ui_layout(simple: bool) -> bool:
     """0.2.10: Ansichts-Modus in Dokumente\\PitBoss R3E\\ui_layout.json speichern."""
     try:
-        EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-        UI_LAYOUT_PATH.write_text(json.dumps({"simple": bool(simple)}, indent=2), encoding="utf-8")
-        return True
+        return _atomic_write_json(UI_LAYOUT_PATH, {"simple": bool(simple)})
     except Exception:
         return False
 
@@ -172,7 +202,7 @@ SESSIONS_INDEX_PATH = EXPORT_DIR / "sessions.json"
 def load_sessions_index() -> dict:
     """0.2.13: {"names": {...}, "meta": {...}} laden; ungueltig -> leere Struktur."""
     try:
-        raw = json.loads(SESSIONS_INDEX_PATH.read_text(encoding="utf-8"))
+        raw = _load_json_bak(SESSIONS_INDEX_PATH)
         if isinstance(raw, dict):
             return raw
     except Exception:
@@ -182,9 +212,7 @@ def load_sessions_index() -> dict:
 def save_sessions_index(idx: dict) -> bool:
     """0.2.13: Sitzungs-Index in Dokumente\\PitBoss R3E\\sessions.json speichern."""
     try:
-        EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-        SESSIONS_INDEX_PATH.write_text(json.dumps(idx, indent=2), encoding="utf-8")
-        return True
+        return _atomic_write_json(SESSIONS_INDEX_PATH, idx)
     except Exception:
         return False
 
@@ -454,7 +482,7 @@ def load_hotkey_config() -> dict:
     """0.2.5: Hotkey-Belegung laden (ungueltige/fehlende Eintraege -> Standard)."""
     cfg = dict(DEFAULT_HOTKEYS)
     try:
-        raw = json.loads(HOTKEY_CONFIG_PATH.read_text(encoding="utf-8"))
+        raw = _load_json_bak(HOTKEY_CONFIG_PATH)
     except Exception:
         raw = None
     if isinstance(raw, dict):
@@ -473,9 +501,7 @@ def load_hotkey_config() -> dict:
 def save_hotkey_config(cfg: dict):
     """0.2.5: Hotkey-Belegung in Dokumente\\PitBoss R3E\\hotkeys.json speichern."""
     try:
-        EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-        HOTKEY_CONFIG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
-        return True
+        return _atomic_write_json(HOTKEY_CONFIG_PATH, cfg)
     except Exception:
         return False
 
@@ -2134,25 +2160,22 @@ class DamageModel:
     def load(self):
         if not self.config_path:
             return
-        try:
-            import json
-            with open(self.config_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            for k in self.DEFAULTS:
-                if k in data:
+        # 0.4.4.3: .bak-Fallback beim Lesen (Kalibrierwerte)
+        data = _load_json_bak(Path(self.config_path))
+        if not isinstance(data, dict):
+            return
+        for k in self.DEFAULTS:
+            if k in data:
+                try:
                     self.cfg[k] = float(data[k])
-        except Exception:
-            pass
+                except Exception:
+                    pass
 
     def save(self):
         if not self.config_path:
             return
-        try:
-            import json
-            with open(self.config_path, "w", encoding="utf-8") as f:
-                json.dump(self.cfg, f, indent=2)
-        except Exception:
-            pass
+        # 0.4.4.3: atomar + .bak (Schaedigungs-Kalibrierwerte)
+        _atomic_write_json(self.config_path, self.cfg)
 
     def reset(self):
         self.cur = {k: None for k, _ in self.PARTS}     # aktueller Schaden je Teil (None = unbekannt)
@@ -2319,7 +2342,7 @@ CORNER_NAMES_PATH = EXPORT_DIR / "corner_names.json"  # 0.2.37
 def load_corner_names() -> dict:
     """0.2.37: {"Strecke": {"1": "Name", ...}} laden; ungueltig -> leeres Dict."""
     try:
-        raw = json.loads(CORNER_NAMES_PATH.read_text(encoding="utf-8"))
+        raw = _load_json_bak(CORNER_NAMES_PATH)
         return raw if isinstance(raw, dict) else {}
     except Exception:
         return {}
@@ -2328,9 +2351,7 @@ def load_corner_names() -> dict:
 def save_corner_names(data: dict) -> bool:
     """0.2.37: Kurvennamen in Dokumente\\PitBoss R3E\\corner_names.json speichern."""
     try:
-        EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-        CORNER_NAMES_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-        return True
+        return _atomic_write_json(CORNER_NAMES_PATH, data, ensure_ascii=False)
     except Exception:
         return False
 
@@ -3545,7 +3566,7 @@ class BlindSpotOverlayWindow(OverlayStyleMixin, QWidget):
         # bestehenden Setup greift. Neuer Schluessel "flip2" ab jetzt.
         try:
             if BLINDSPOT_CONFIG_PATH.exists():
-                data = json.loads(BLINDSPOT_CONFIG_PATH.read_text(encoding="utf-8"))
+                data = _load_json_bak(BLINDSPOT_CONFIG_PATH)
                 if "flip2" in data:
                     return bool(data["flip2"])
                 return not bool(data.get("flip", True))  # Migration: alte Bedeutung umkehren
@@ -3556,8 +3577,7 @@ class BlindSpotOverlayWindow(OverlayStyleMixin, QWidget):
     def set_flip(self, on):
         self._flip = bool(on)
         try:
-            EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-            BLINDSPOT_CONFIG_PATH.write_text(json.dumps({"flip2": self._flip}), encoding="utf-8")
+            _atomic_write_json(BLINDSPOT_CONFIG_PATH, {"flip2": self._flip})
         except Exception:
             pass
         self.update()
@@ -3714,25 +3734,23 @@ class BrakeWearModel:
     def load(self):
         if not self.config_path:
             return
-        try:
-            import json
-            with open(self.config_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            for k in self.DEFAULTS:
-                if k in data:
+        # 0.4.4.3: .bak-Fallback beim Lesen (Kalibrierwerte)
+        data = _load_json_bak(Path(self.config_path))
+        if not isinstance(data, dict):
+            return
+        for k in self.DEFAULTS:
+            if k in data:
+                try:
                     self.cfg[k] = float(data[k])
-        except Exception:
-            pass
+                except Exception:
+                    pass
 
     def save(self):
         if not self.config_path:
             return
-        try:
-            import json
-            with open(self.config_path, "w", encoding="utf-8") as f:
-                json.dump(self.cfg, f, indent=2)
-        except Exception:
-            pass
+        # 0.4.4.3: atomar + .bak (bislang konnte ein Schreibabriss die
+        # Kalibrierwerte der Bremsbelag-Schaetzung vernichten)
+        _atomic_write_json(self.config_path, self.cfg)
 
     def reset(self):
         self.thermal = [0.0, 0.0, 0.0, 0.0]
@@ -4747,15 +4765,16 @@ class BrakeCoach(QObject):
     LEAD_KEYS = {"brake": "BRAKE_LEAD_S", "turnin": "TURNIN_LEAD_S", "gas": "GAS_LEAD_S"}
 
     def load_timing(self):
-        try:
-            import json
-            with open(COACH_TIMING_PATH, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-            for kind, attr in self.LEAD_KEYS.items():
-                if kind in cfg:
+        # 0.4.4.3: .bak-Fallback beim Lesen
+        cfg = _load_json_bak(COACH_TIMING_PATH)
+        if not isinstance(cfg, dict):
+            return
+        for kind, attr in self.LEAD_KEYS.items():
+            if kind in cfg:
+                try:
                     setattr(self, attr, max(0.0, min(3.0, float(cfg[kind]))))
-        except Exception:
-            pass
+                except Exception:
+                    pass
 
     def get_lead(self, kind):
         return float(getattr(self, self.LEAD_KEYS.get(kind, "BRAKE_LEAD_S")))
@@ -4765,13 +4784,9 @@ class BrakeCoach(QObject):
         if not attr:
             return False
         setattr(self, attr, max(0.0, min(3.0, float(value))))
-        try:
-            import json
-            EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-            with open(COACH_TIMING_PATH, "w", encoding="utf-8") as f:
-                json.dump({k: self.get_lead(k) for k in self.LEAD_KEYS}, f, indent=2)
-        except Exception:
-            pass
+        # 0.4.4.3: atomar + .bak (Ansage-Vorlauf-Einstellungen)
+        _atomic_write_json(COACH_TIMING_PATH,
+                           {k: self.get_lead(k) for k in self.LEAD_KEYS})
         return True
 
     def set_enabled(self, on):
@@ -5798,12 +5813,11 @@ class Main(QMainWindow):
     def load_last_active_profile_name(self) -> str:
         """0.4.5.3: zuletzt aktives Fahrer-/Hardwareprofil merken."""
         try:
-            if DRIVER_PROFILE_STATE_PATH.exists():
-                data = json.loads(DRIVER_PROFILE_STATE_PATH.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    name = str(data.get("last_active_profile", "")).strip()
-                    if name and name in self.hardware_profiles:
-                        return name
+            data = _load_json_bak(DRIVER_PROFILE_STATE_PATH)
+            if isinstance(data, dict):
+                name = str(data.get("last_active_profile", "")).strip()
+                if name and name in self.hardware_profiles:
+                    return name
         except Exception:
             pass
         return next(iter(self.hardware_profiles.keys()), "Standard")
@@ -5811,7 +5825,7 @@ class Main(QMainWindow):
     def save_last_active_profile_name(self, name: str = None):
         try:
             n = (name or self.current_profile_name or self.selected_driver_profile_name() or "Standard").strip() or "Standard"
-            DRIVER_PROFILE_STATE_PATH.write_text(json.dumps({"last_active_profile": n}, ensure_ascii=False, indent=2), encoding="utf-8")
+            _atomic_write_json(DRIVER_PROFILE_STATE_PATH, {"last_active_profile": n})
         except Exception:
             pass
 
@@ -5841,22 +5855,18 @@ class Main(QMainWindow):
 
     def load_hardware_profiles(self) -> dict:
         try:
-            if DRIVER_PROFILE_PATH.exists():
-                data = json.loads(DRIVER_PROFILE_PATH.read_text(encoding="utf-8"))
-                if isinstance(data, dict) and data:
-                    return {str(k): (v if isinstance(v, dict) else self.default_hardware_profile(str(k))) for k, v in data.items()}
+            # 0.4.4.3: .bak-Fallback beim Lesen
+            data = _load_json_bak(DRIVER_PROFILE_PATH)
+            if isinstance(data, dict) and data:
+                return {str(k): (v if isinstance(v, dict) else self.default_hardware_profile(str(k))) for k, v in data.items()}
         except Exception:
             pass
         return {"Standard": self.default_hardware_profile("Standard")}
 
     def save_hardware_profiles(self):
-        try:
-            DRIVER_PROFILE_PATH.write_text(json.dumps(self.hardware_profiles, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception as e:
-            try:
-                self.log.append(f"Hardware-Profil konnte nicht gespeichert werden: {e}")
-            except Exception:
-                pass
+        # 0.4.4.3: atomar + .bak (Fahrer-Profile sind muehsam angelegt)
+        if not _atomic_write_json(DRIVER_PROFILE_PATH, self.hardware_profiles):
+            self.log.append("Hardware-Profil konnte nicht gespeichert werden.")
 
 
     def normalize_imported_profile(self, name: str, value) -> dict:
@@ -6468,7 +6478,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
         """0.4.2.2: 'Reifen-Overlay automatisch oeffnen' laden (overlay_prefs.json).
         Standard: AUS - das Overlay oeffnet sich nur noch per F6, Button oder Menue."""
         try:
-            raw = json.loads((EXPORT_DIR / "overlay_prefs.json").read_text(encoding="utf-8"))
+            raw = _load_json_bak(EXPORT_DIR / "overlay_prefs.json")
             return bool(raw.get("tire_autostart", False)) if isinstance(raw, dict) else False
         except Exception:
             return False
@@ -6482,13 +6492,13 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             pref_path = EXPORT_DIR / "overlay_prefs.json"
             data = {}
             try:
-                loaded = json.loads(pref_path.read_text(encoding="utf-8"))
+                loaded = _load_json_bak(pref_path)
                 if isinstance(loaded, dict):
                     data = loaded
             except Exception:
                 pass
             data["tire_autostart"] = on
-            pref_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            _atomic_write_json(pref_path, data)
         except Exception as e:
             try:
                 self.log.append(f"Hinweis: Einstellung konnte nicht gespeichert werden: {e}")
@@ -7257,7 +7267,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             win.set_flip(on)
         try:
             EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-            BLINDSPOT_CONFIG_PATH.write_text(json.dumps({"flip2": on}), encoding="utf-8")
+            _atomic_write_json(BLINDSPOT_CONFIG_PATH, {"flip2": on})
         except Exception:
             pass
         try:
