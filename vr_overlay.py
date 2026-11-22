@@ -46,6 +46,8 @@ Shared Memory sind pur und per Selftest pruefbar).
 
 import ctypes
 import json
+import os
+import shutil
 import struct
 import sys
 
@@ -112,26 +114,44 @@ DEFAULTS = {
 
 
 def load_config(path) -> dict:
-    """Gespeicherte Konfiguration, gemischt mit den Standardwerten."""
+    """Gespeicherte Konfiguration, gemischt mit den Standardwerten.
+    0.4.4.3: Ist die Datei beschaedigt, wird die .bak-Sicherung probiert."""
     cfg = dict(DEFAULTS)
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(data, dict):
-            for k, v in data.items():
-                if k in DEFAULTS:
-                    cfg[k] = v
-    except Exception:
-        pass
+    # 0.4.4.3: .bak-Fallback (Hauptdatei zuerst, dann Sicherung)
+    data = None
+    for cand_path in (str(path), str(path) + ".bak"):
+        try:
+            with open(cand_path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                data = loaded
+                break
+        except Exception:
+            continue
+    if isinstance(data, dict):
+        for k, v in data.items():
+            if k in DEFAULTS:
+                cfg[k] = v
     return cfg
 
 
 def save_config(path, updates: dict) -> dict:
-    """Einzelne Werte ergaenzen/ueberschreiben und zurueckschreiben."""
+    """Einzelne Werte ergaenzen/ueberschreiben und zurueckschreiben.
+    0.4.4.3: atomar (.bak + .tmp + os.replace) - die VR-Einstellungen
+    ueberstehen auch ein Absturz/Update-Beenden mitten im Schreiben."""
     try:
         data = load_config(path)
         data.update(updates)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        try:
+            if path.exists():
+                shutil.copy2(path, str(path) + ".bak")
+        except Exception:
+            pass
+        tmp = str(path) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, path)
     except Exception:
         pass
     return load_config(path)

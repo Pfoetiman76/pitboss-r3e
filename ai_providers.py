@@ -15,6 +15,7 @@ Google Gemini, Anthropic Claude, DeepSeek.
 import base64
 import json
 import os
+import shutil
 import re
 import socket
 import urllib.error
@@ -343,21 +344,28 @@ def default_config():
 
 def load_config(path):
     cfg = default_config()
-    try:
-        with open(path, encoding="utf-8") as fh:
-            raw = json.load(fh)
-        if isinstance(raw, dict):
-            if raw.get("provider") in PROVIDERS:
-                cfg["provider"] = raw["provider"]
-            for pid in PROVIDERS:
-                k = (raw.get("keys") or {}).get(pid)
-                if k:
-                    cfg["keys"][pid] = unprotect_secret(k)
-                m = (raw.get("models") or {}).get(pid)
-                if m:
-                    cfg["models"][pid] = str(m)
-    except Exception:
-        pass
+    # 0.4.4.3: .bak-Fallback - ist die Hauptdatei beschaedigt, greift die
+    # beim letzten erfolgreichen Speichern angelegte Sicherungskopie.
+    raw = None
+    for cand in (str(path), str(path) + ".bak"):
+        try:
+            with open(cand, encoding="utf-8") as fh:
+                loaded = json.load(fh)
+            if isinstance(loaded, dict):
+                raw = loaded
+                break
+        except Exception:
+            continue
+    if isinstance(raw, dict):
+        if raw.get("provider") in PROVIDERS:
+            cfg["provider"] = raw["provider"]
+        for pid in PROVIDERS:
+            k = (raw.get("keys") or {}).get(pid)
+            if k:
+                cfg["keys"][pid] = unprotect_secret(k)
+            m = (raw.get("models") or {}).get(pid)
+            if m:
+                cfg["models"][pid] = str(m)
     return cfg
 
 
@@ -371,6 +379,12 @@ def save_config(path, cfg):
     tmp = str(path) + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(out, fh, indent=2)
+    # 0.4.4.3: letzte gueltige Fassung als .bak sichern
+    try:
+        if os.path.exists(path):
+            shutil.copy2(path, str(path) + ".bak")
+    except Exception:
+        pass
     try:
         os.chmod(tmp, 0o600)
     except Exception:
