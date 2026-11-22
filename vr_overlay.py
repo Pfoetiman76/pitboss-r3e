@@ -67,6 +67,7 @@ MAX_SLOTS = 16
 DATA_START = HEADER_SIZE + MAX_SLOTS * SLOT_SIZE   # 788
 MAPPING_NAME = "Local\\PitBossR3E_VR"       # sitzungsgleich mit dem Spielprozess
 MAPPING_SIZE = 64 * 1024 * 1024            # 64 MB Deckel fuer alle Slot-Pixel
+RECENTER_OFFSET = MAPPING_SIZE - 4         # 0.4.4.4: Ausrichtungs-Flag (DLL liest)
 
 MAX_CANVAS = 4096            # Deckel gegen defekte Header
 CAP_W, CAP_H = 4096, 4096    # Deckel = Layer-Obergrenze; 4K bleibt 1:1 scharf
@@ -266,6 +267,7 @@ class VRMirror:
         self._view = None
         self._frame = 0
         self._last = 0.0
+        self._recenter_ticks = 0  # 0.4.4.4: Ausrichtungs-Impuls fuer die DLL
 
     def update_pose(self, cfg: dict):
         """Regler-Aenderungen uebernehmen (Deckkraft fuer den QPainter)."""
@@ -299,6 +301,13 @@ class VRMirror:
             self._hmap = h
             self._view = v
             self._frame = 0
+            self._recenter_ticks = 0
+            try:
+                # 0.4.4.4: Ausrichtungs-Flag sicher auf 0 legen, damit kein
+                # alter Impuls aus einer frueheren Sitzung haengen bleibt.
+                ctypes.memmove(self._view + RECENTER_OFFSET, struct.pack("<I", 0), 4)
+            except Exception:
+                pass
             return True
         except Exception:
             return False
@@ -357,6 +366,22 @@ class VRMirror:
                              len(slots), MAX_SLOTS)
         return header + table + blob
 
+    def request_recenter(self) -> bool:
+        """0.4.4.4: Ausrichtungs-Impuls fuer die DLL setzen. Nach dem
+        naechsten xrEndFrame verankert der VR-Layer alle Tafeln neu auf die
+        aktuelle Kopf-Blickrichtung (Gierwinkel + X/Z-Position, Hoehe und
+        Abstaende bleiben). Rueckgabe False, wenn der Spiegel nicht laeuft."""
+        self._recenter_ticks = 2  # fuer ~2 Veröffentlichungen stehen lassen
+        return self._view is not None
+
+    def _consume_recenter(self) -> int:
+        """0.4.4.4: Flag-Wert, den publish_slots ans Ende des Mappings
+        schreibt (1 = DLL soll ausrichten, danach wieder 0)."""
+        if self._recenter_ticks > 0:
+            self._recenter_ticks -= 1
+            return 1
+        return 0
+
     def publish_slots(self, slots, now: float = None) -> bool:
         """Alle Overlay-Tafeln ins Shared Memory schreiben (frame hochzaehlen).
         Rueckgabe False, wenn das Mapping fehlt oder die Daten unzulaessig
@@ -380,6 +405,13 @@ class VRMirror:
             ctypes.memmove(self._view, msg, len(msg))
         except Exception:
             return False
+        # 0.4.4.4: Ausrichtungs-Flag am Mapping- Ende schreiben (hinter allen
+        # Pixel-Daten; die DLL liest es in jedem xrEndFrame).
+        try:
+            ctypes.memmove(self._view + RECENTER_OFFSET,
+                           struct.pack("<I", self._consume_recenter()), 4)
+        except Exception:
+            pass
         if now is not None:
             self._last = now
         return True
@@ -467,6 +499,19 @@ if __name__ == "__main__":
     check("VRMirror: publish ohne start() = False", m.publish_slots([]) is False)
     m._last = 100.0  # Basiszeit fuer den Drossel-Test
     check("VRMirror: zu frueh erkannt", m.too_soon(100.01) is True and m.too_soon(100.2) is False)
+
+    # 0.4.4.4: Ausrichtungs-Flag (VR-Zentrierungs-Kopplung)
+    check("Ausrichtung: Flag-Offset hinter den Pixel-Daten",
+          RECENTER_OFFSET == MAPPING_SIZE - 4 and RECENTER_OFFSET > DATA_START)
+    check("Ausrichtung: ohne Spiegel kein Erfolg", m.request_recenter() is False)
+    m._view = 1  # Mapping simuliert (nur fuer die Logik, kein echtes Schreiben)
+    check("Ausrichtung: Impuls gesetzt -> 2 publish lang aktiv",
+          m.request_recenter() is True and m._recenter_ticks == 2)
+    check("Ausrichtung: 1. publish liefert Flag 1", m._consume_recenter() == 1)
+    check("Ausrichtung: 2. publish liefert Flag 1", m._consume_recenter() == 1)
+    check("Ausrichtung: danach wieder 0", m._consume_recenter() == 0,
+          m._recenter_ticks)
+    m._view = None
 
     print("SELTEST", "OK" if ok else "FEHLER")
     sys.exit(0 if ok else 1)
