@@ -33,7 +33,7 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.4.1 Beta"
+APP_VERSION = "0.4.4.2 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -980,10 +980,18 @@ class SegmentDelta:
 
 
 def _load_overlay_sizes():
-    """0.4.9.8: gemerkte Overlay-Groessen (pro Klasse) laden."""
+    """0.4.9.8: gemerkte Overlay-Groessen (pro Klasse) laden.
+    0.4.4.2: Ist die Datei beschaedigt (z. B. Absturz/Update-Beenden mitten im
+    Schreibvorgang), wird die automatisch gepflegte Sicherungskopie
+    overlay_sizes.json.bak verwendet - Positionen/Modi gehen nicht verloren."""
     try:
-        import json
         with open(OVERLAY_SIZES_PATH, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        pass
+    try:
+        with open(str(OVERLAY_SIZES_PATH) + ".bak", "r", encoding="utf-8") as f:
             d = json.load(f)
         return d if isinstance(d, dict) else {}
     except Exception:
@@ -991,6 +999,31 @@ def _load_overlay_sizes():
 
 
 _OVERLAY_SIZES = None
+
+
+def _persist_overlay_sizes():
+    """0.4.4.2: overlay_sizes.json ATOMAR schreiben (tmp + os.replace) und
+    vorher die letzte gueltige Fassung als .bak sichern. Die Datei wird sehr
+    haeufig geschrieben (Autosave alle 5 s, Umschaltungen, Groessen); ein
+    unterbrochener Schreibvorgang durch Update/Absturz/Stromausfall kann sie
+    sonst beschaedigen und alle Overlay-Positionen vernichten."""
+    global _OVERLAY_SIZES
+    if _OVERLAY_SIZES is None:
+        return
+    try:
+        EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            if OVERLAY_SIZES_PATH.exists():
+                import shutil
+                shutil.copy2(OVERLAY_SIZES_PATH, str(OVERLAY_SIZES_PATH) + ".bak")
+        except Exception:
+            pass
+        tmp = str(OVERLAY_SIZES_PATH) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(_OVERLAY_SIZES, f, indent=2)
+        os.replace(tmp, OVERLAY_SIZES_PATH)
+    except Exception:
+        pass
 
 
 def _remember_overlay_size(widget):
@@ -1006,10 +1039,7 @@ def _remember_overlay_size(widget):
         # 0.2.42: Skalierung + Deckkraft pro Overlay mit merken
         _OVERLAY_SIZES[type(widget).__name__ + ":scale"] = round(float(getattr(widget, "ov_scale", 1.0)), 3)
         _OVERLAY_SIZES[type(widget).__name__ + ":opacity"] = round(float(getattr(widget, "ov_opacity", 1.0)), 3)
-        import json
-        EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-        with open(OVERLAY_SIZES_PATH, "w", encoding="utf-8") as f:
-            json.dump(_OVERLAY_SIZES, f, indent=2)
+        _persist_overlay_sizes()  # 0.4.4.2: atomar + .bak
     except Exception:
         pass
 
@@ -1022,10 +1052,7 @@ def _remember_overlay_state(widget):
             _OVERLAY_SIZES = _load_overlay_sizes()
         _OVERLAY_SIZES[type(widget).__name__ + ":scale"] = round(float(getattr(widget, "ov_scale", 1.0)), 3)
         _OVERLAY_SIZES[type(widget).__name__ + ":opacity"] = round(float(getattr(widget, "ov_opacity", 1.0)), 3)
-        import json
-        EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-        with open(OVERLAY_SIZES_PATH, "w", encoding="utf-8") as f:
-            json.dump(_OVERLAY_SIZES, f, indent=2)
+        _persist_overlay_sizes()  # 0.4.4.2: atomar + .bak
     except Exception:
         pass
 
@@ -1069,10 +1096,7 @@ def _save_open_overlays(widgets):
             except Exception:
                 pass
         _OVERLAY_SIZES["open"] = names
-        import json
-        EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-        with open(OVERLAY_SIZES_PATH, "w", encoding="utf-8") as f:
-            json.dump(_OVERLAY_SIZES, f, indent=2)
+        _persist_overlay_sizes()  # 0.4.4.2: atomar + .bak
     except Exception:
         pass
 
