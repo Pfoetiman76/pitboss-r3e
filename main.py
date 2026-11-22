@@ -33,7 +33,7 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.4.0 Beta"
+APP_VERSION = "0.4.4.1 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -1058,7 +1058,14 @@ def _save_open_overlays(widgets):
                 if not _open:
                     continue
                 names.append(type(w).__name__)
-                _OVERLAY_SIZES[type(w).__name__ + ":pos"] = [int(w.x()), int(w.y())]
+                # 0.4.4.1: Position nur merken, wenn das Overlay seine
+                # gespeicherte Position schon wiederhergestellt hat
+                # (_pos_restored, gesetzt in _restore_overlay_size). Sonst
+                # wuerde z. B. das Sitzungs-Sichern beim App-Start die
+                # gespeicherte Position mit der Fenster-Standardposition
+                # ueberschreiben (Marcels Meldung: Positionen weg).
+                if getattr(w, "_pos_restored", False):
+                    _OVERLAY_SIZES[type(w).__name__ + ":pos"] = [int(w.x()), int(w.y())]
             except Exception:
                 pass
         _OVERLAY_SIZES["open"] = names
@@ -1114,10 +1121,27 @@ def _restore_overlay_size(widget):
         pos = _OVERLAY_SIZES.get(type(widget).__name__ + ":pos")
         if pos and len(pos) == 2:
             try:
-                screen = QApplication.primaryScreen().availableGeometry()
-                x = max(screen.left(), min(int(pos[0]), screen.right() - widget.width()))
-                y = max(screen.top(), min(int(pos[1]), screen.bottom() - 40))
-                widget.move(x, y)
+                # 0.4.4.1: Mehr-Monitor-faehig - befindet sich die gespeicherte
+                # Position auf IRGENDEINEM angeschlossenen Bildschirm, wird sie
+                # unangetastet uebernommen (vorher wurde alles auf den
+                # Hauptbildschirm gezwungen). Nur bei Positionen ausserhalb
+                # aller Bildschirme (z. B. abgezogener Zweitmonitor) wird auf
+                # den Hauptbildschirm zurueckgeklammert.
+                _x, _y = int(pos[0]), int(pos[1])
+                _ok = False
+                for _scr in QApplication.screens():
+                    _g = _scr.availableGeometry()
+                    if _g.left() <= _x and _x <= _g.right() - widget.width() \
+                       and _g.top() <= _y and _y <= _g.bottom() - 40:
+                        _ok = True
+                        break
+                if _ok:
+                    widget.move(_x, _y)
+                else:
+                    screen = QApplication.primaryScreen().availableGeometry()
+                    x = max(screen.left(), min(_x, screen.right() - widget.width()))
+                    y = max(screen.top(), min(_y, screen.bottom() - 40))
+                    widget.move(x, y)
             except Exception:
                 pass
         # 0.2.47: Die gemerkte Deckkraft wirkt im Hintergrund (Alpha), nicht mehr
@@ -1125,6 +1149,10 @@ def _restore_overlay_size(widget):
         # paintEvent fliesst ov_opacity automatisch in _bg()/_panel() ein.
     except Exception:
         pass
+    finally:
+        # 0.4.4.1: Signal an _save_open_overlays - das Overlay ist platziert,
+        # ab jetzt darf seine Position gesichert werden.
+        widget._pos_restored = True
 
 
 
@@ -5543,6 +5571,32 @@ class Main(QMainWindow):
         # oeffnen (Position/Groesse/Skalierung/Deckkraft stellt jedes Overlay
         # selbst aus overlay_sizes.json wieder her).
         QTimer.singleShot(0, self._restore_overlay_session)
+        # 0.4.4.1: Overlay-Sitzung (offen + Positionen) laufend sichern -
+        # alle 5 s, aber nur wenn sich etwas geaendert hat. So ueberlebt auch
+        # ein verschobenes Overlay einen Absturz/Update-Neustart.
+        self._overlay_session_sig = None
+        self._overlay_autosave = QTimer(self)
+        self._overlay_autosave.setInterval(5000)
+        self._overlay_autosave.timeout.connect(self._autosave_overlay_session)
+        self._overlay_autosave.start()
+
+    def _overlay_session_signature(self):
+        sig = []
+        for w in self.all_overlay_windows():
+            try:
+                sig.append((type(w).__name__, int(w.x()), int(w.y()), w.isVisible()))
+            except Exception:
+                pass
+        return sig
+
+    def _autosave_overlay_session(self):
+        try:
+            sig = self._overlay_session_signature()
+            if sig != getattr(self, "_overlay_session_sig", None):
+                _save_open_overlays(self.all_overlay_windows())
+                self._overlay_session_sig = sig
+        except Exception:
+            pass
 
 
 
