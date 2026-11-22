@@ -145,6 +145,11 @@ static const uint32_t kMaxSlots    = 16;    // MUSS zur Python-Seite passen
 static const uint32_t kSlotSize    = 48;    // sizeof(SlotHeader)
 static const uint32_t kDataStart   = 20 + kMaxSlots * kSlotSize;  // 788
 static const uint64_t kShmBytes    = 64ull * 1024 * 1024;          // wie Python
+// 0.4.4.4: Ausrichtungs-Flag am END: des Mappings (hinter allen Pixel-Daten,
+// dass das v3-Layout unberuehrt bleibt). PitBoss schreibt dort 1, wenn der
+// Nutzer die VR-Tafeln per Hotkey vor seine aktuelle Blickrichtung richten
+// will (nach VR-Neuzentrierung); die DLL liest es im naechsten xrEndFrame.
+static const uint64_t kRecenterFlagOffset = kShmBytes - 4;
 
 // ---------------------------------------------------------------------------
 // Globaler Layer-Zustand
@@ -163,6 +168,7 @@ static PFN_xrAcquireSwapchainImage     g_xrAcquireSwapchainImage;
 static PFN_xrWaitSwapchainImage        g_xrWaitSwapchainImage;
 static PFN_xrReleaseSwapchainImage    g_xrReleaseSwapchainImage;
 static PFN_xrCreateReferenceSpace      g_xrCreateReferenceSpace;
+static PFN_xrLocateViews               g_xrLocateViews;   // 0.4.4.4
 
 // ---------------------------------------------------------------------------
 // Zielprozess-Filter: Implizite Layer laden systemweit. Der Layer darf nur
@@ -301,6 +307,73 @@ static XrQuaternionf TiltToQuaternion(float pitch, float yaw) {
     q.z = -sy * sp;
     q.w = cy * cp;
     return q;
+}
+
+// ---------------------------------------------------------------------------
+// 0.4.4.4: Ausrichtung der Tafeln auf die aktuelle Blickrichtung. Nach einer
+// VR-Neuzentrierung (Virtual Desktop) bleibt die Sitz-/Blick-Nulllage woanders
+// als die raumfesten Tafel-Posen; der Nutzer musste bisher alle Overlays
+// einzeln nachziehen. PitBoss setzt jetzt per Hotkey das Flag am Ende des
+// Mappings, die DLL verankert hierauf ALLE Slot-Posen neu: Gierwinkel (yaw)
+// und horizontale Kopfposition der aktuellen Kopf-Pose werden zum neuen
+// Anker; Hoehe und alle relativen Offsets/Abstaende/Kippungen bleiben, wie
+// PitBoss sie liefert. Der Anker bleibt bestehen, bis der Hotkey erneut
+// gedrueckt wird (neuer Anker) oder die DLL neu gelaecht wird.
+// ---------------------------------------------------------------------------
+
+static XrQuaternionf MulQuat(const XrQuaternionf& a, const XrQuaternionf& b) {
+    XrQuaternionf r;
+    r.x = a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y;
+    r.y = a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x;
+    r.z = a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w;
+    r.w = a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z;
+    return r;
+}
+
+static XrVector3f RotateVec(const XrQuaternionf& q, const XrVector3f& v) {
+    // v' = v + 2w*(u x v) + 2*(u x (u x v))  mit u = (q.x, q.y, q.z)
+    const XrVector3f u = {q.x, q.y, q.z};
+    const XrVector3f uv = {u.y * v.z - u.z * v.y,
+                            u.z * v.x - u.x * v.z,
+                            u.x * v.y - u.y * v.x};
+    const XrVector3f uuv = {u.y * uv.z - u.z * uv.y,
+                            u.z * uv.x - u.x * uv.z,
+                            u.x * uv.y - u.y * uv.x};
+    return {v.x + 2.0f * (q.w * uv.x + uuv.x),
+            v.y + 2.0f * (q.w * uv.y + uuv.y),
+            v.z + 2.0f * (q.w * uv.z + uuv.z)};
+}
+
+static XrPosef g_anchor;            // Anker auf die Blickrichtung (0.4.4.4)
+static bool    g_anchorValid = false;
+
+// Kopf-Pose im LOCAL-Raum der Tafeln -> Anker (nur Gierwinkel + X/Z-Position,
+// Hoehe bleibt, wie PitBoss sie konfiguriert hat).
+static void BuildAnchorFromView(const XrPosef& view) {
+    const XrQuaternionf& q = view.orientation;
+    // Blickrichtung: R * (0, 0, -1)  (f.x = -2(xz+wy), f.z = 2(x^2+y^2)-1)
+    const float fx = -2.0f * (q.x * q.z + q.w * q.y);
+    const float fz = 2.0f * (q.x * q.x + q.y * q.y) - 1.0f;
+    // Gierwinkel: LOCAL -Z ("vor dem Fahrer") auf die horizontale
+    // Blickrichtung drehen: sin(a) = -fx/n, cos(a) = -fz/n
+    const float n = sqrtf(fx * fx + fz * fz);
+    const float alpha = (n > 1e-6f) ? atan2f(-fx, -fz) : 0.0f;
+    g_anchor.orientation = {0.0f, sinf(alpha * 0.5f), 0.0f,
+                            cosf(alpha * 0.5f)};
+    g_anchor.position = {view.position.x, 0.0f, view.position.z};
+    g_anchorValid = true;
+}
+
+// Neue Slot-Pose = Anker * Basis-Pose (aus dem Shared Memory).
+static XrPosef AnchoredPose(const XrPosef& base) {
+    if (!g_anchorValid) return base;
+    XrPosef out;
+    out.orientation = MulQuat(g_anchor.orientation, base.orientation);
+    const XrVector3f rotated = RotateVec(g_anchor.orientation, base.position);
+    out.position.x = g_anchor.position.x + rotated.x;
+    out.position.y = g_anchor.position.y + rotated.y;
+    out.position.z = g_anchor.position.z + rotated.z;
+    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -458,7 +531,7 @@ static void InitOverlayImpl(XrSession session, OverlayState* st) {
         || !g_xrDestroySwapchain
         || !g_xrEnumerateSwapchainImages || !g_xrAcquireSwapchainImage
         || !g_xrWaitSwapchainImage || !g_xrReleaseSwapchainImage
-        || !g_xrCreateReferenceSpace || !g_nextEndFrame) {
+        || !g_xrCreateReferenceSpace || !g_xrLocateViews || !g_nextEndFrame) {
         Log("Runtime-Funktionen nicht aufgeloest - Overlay-Init abgebrochen");
         return;
     }
@@ -744,9 +817,61 @@ static XrResult XRAPI_PTR LayerEndFrame(XrSession session,
     bool anySlot = false;
     if (st->ok && st->slotsSeen && ShmValidV3(st)) {
         const SharedHeader3* hdr = st->shmHeader3;
+
+        // 0.4.4.4: Ausrichtungs-Flag pruefen (PitBoss-Hotkey). Anker auf
+        // die aktuelle Kopf-Pose im LOCAL-Raum setzen - alle Tafeln stehen
+        // danach wieder vor der Blickrichtung (z. B. nach VR-Zentrierung).
+        try {
+            const uint32_t flag =
+                *reinterpret_cast<const uint32_t*>(
+                    reinterpret_cast<const uint8_t*>(hdr) + kRecenterFlagOffset);
+            if (flag != 0 && g_xrLocateViews) {
+                XrViewLocateInfo vli{XR_TYPE_VIEW_LOCATE_INFO};
+                vli.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+                vli.displayTime = frameEndInfo->displayTime;
+                vli.space = st->space;
+                XrViewState vstate{XR_TYPE_VIEW_STATE};
+                XrView views[2]{};   // nullinitialisiert (next/pose/fov)
+                views[0].type = XR_TYPE_VIEW;
+                views[1].type = XR_TYPE_VIEW;
+                uint32_t nViews = 0;
+                if (g_xrLocateViews(session, &vli, &vstate, 2, &nViews, views)
+                        == XR_SUCCESS
+                    && nViews >= 1
+                    && (vstate.viewStateFlags
+                            & XR_VIEW_STATE_POSITION_VALID_BIT)
+                    && (vstate.viewStateFlags
+                            & XR_VIEW_STATE_ORIENTATION_VALID_BIT)) {
+                    BuildAnchorFromView(views[0].pose);
+                    // Log-Drosselung: Das Flag bleibt ~2 Veröffentlichungen
+                    // (~0,2 s) stehen, xrEndFrame laeuft aber mit Bildrate.
+                    static ULONGLONG lastAnchorLog = 0;
+                    const ULONGLONG now = GetTickCount64();
+                    if (now - lastAnchorLog > 400) {
+                        lastAnchorLog = now;
+                        Log("VR-Ausrichtung: Tafeln auf die aktuelle Blickrichtung"
+                            " verankert (Hotkey nach VR-Zentrierung).");
+                    }
+                } else {
+                    static ULONGLONG lastFailLog = 0;
+                    const ULONGLONG now2 = GetTickCount64();
+                    if (now2 - lastFailLog > 400) {
+                        lastFailLog = now2;
+                        Log("VR-Ausrichtung: Kopf-Pose nicht verfuegbar"
+                            " (Flag bleibt gesetzt, neuer Versuch im naechsten Frame).");
+                    }
+                }
+            }
+        } catch (...) {
+            // Nur-Lese-Zugriff; theoretisch kein Wurf moeglich
+        }
+
         for (uint32_t i = 0; i < hdr->count && i < kMaxSlots; ++i) {
             SlotState* ss = &st->slots[i];
             if (!ss->ok) continue;
+            // 0.4.4.4: Basis-Pose (aus dem Shared Memory) mit dem Anker
+            // zusammensetzen; ohne Anker identisch zur alten Position.
+            ss->quad.pose = AnchoredPose(ss->quad.pose);
             layers.push_back(
                 reinterpret_cast<const XrCompositionLayerBaseHeader*>(&ss->quad));
             anySlot = true;
@@ -888,6 +1013,8 @@ extern "C" PVR_EXPORT XrResult XRAPI_CALL xrCreateApiLayerInstance(
          reinterpret_cast<PFN_xrVoidFunction*>(&g_xrReleaseSwapchainImage)},
         {"xrCreateReferenceSpace",
          reinterpret_cast<PFN_xrVoidFunction*>(&g_xrCreateReferenceSpace)},
+        {"xrLocateViews",
+         reinterpret_cast<PFN_xrVoidFunction*>(&g_xrLocateViews)},
     };
     for (const GpaEntry& e : gpaTable) {
         XrResult gpaResult = g_nextGPA(g_instance, e.name, e.target);

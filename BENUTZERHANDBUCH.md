@@ -81,6 +81,8 @@ Menü „Overlays" → „VR-Overlay (Monitor 1:1)" aktivieren. Feineinstellung 
 | 1 … 9 | Overlay direkt auswählen |
 | F4 (ohne Strg+Alt) | Anordnen-Modus beenden |
 
+**VR zentriert (ab 0.4.4.4):** Nach dem Neuzentrieren der VR (z. B. Virtual Desktop) bleiben die Tafeln sonst raumfest stehen. Ein Druck auf **F2** („VR: Overlays zur Blickrichtung“, frei belegbar, auch im Overlays-Menü) setzt alle Tafeln wieder vor die aktuelle Blickrichtung; Höhe, Abstände und Kippungen bleiben unverändert. Einmal drücken genügt pro Zentrierung – danach bleibt alles wieder fest im Raum.
+
 ### Testtafel
 
 Läuft PitBoss **nicht**, bleibt die VR-Tafel unsichtbar. Für Diagnosen kann die grüne Testtafel (Verlauf mit wanderndem Balken) aktiviert werden: im DLL-Ordner eine leere Datei `pitboss_vr_testmuster.flag` anlegen; löschen schaltet sie wieder aus. Das Layer-Protokoll meldet den Zustand beim Spielstart in `%TEMP%\PitBossVR_layer.log`.

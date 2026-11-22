@@ -38,6 +38,15 @@ pad, quadW, quadH, posX, posY, posZ, pitch (Radiant), yaw (Radiant).
 Pose und Kippung werden JE Frame aus der Tabelle uebernommen; die Texturen
 aktualisiert die DLL nur bei neuem Bildzaehler (Performance, 0.4.1.1).
 
+**Ausrichtungs-Flag (0.4.4.4):** Am Mapping-Ende (Offset Mapping-Groesse
+minus 4 Bytes = 64 MB - 4) liegt ein zusaetzliches uint32. PitBoss schreibt
+dort 1, wenn der Nutzer die Tafeln per Hotkey auf die aktuelle Blickrichtung
+ausrichten will (z. B. nach einer VR-Neuzentrierung). Die DLL liest das Flag
+in jedem xrEndFrame, bestimmt die Kopf-Pose per xrLocateViews im LOCAL-Raum
+und verankert danach alle Slot-Posen auf Gierwinkel + X/Z-Position der
+Blickrichtung (Hoehe und Abstaende bleiben). Das Flag-Layout aendert am
+v3-Protokoll nichts.
+
 Die aelteren Protokolle v1 (feste Einzeltafel 512x256) und v2 (eine
 Gesamt-Leinwand mit Pose) bleiben lesbar; die DLL zeigt sie nur, wenn kein
 gueltiger v3-Header anliegt. Laeuft PitBoss nicht, zeigt der Layer ein
