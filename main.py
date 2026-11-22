@@ -33,7 +33,7 @@ import vr_overlay  # 0.4.0.0: VR-Tafel (PBVR-Shared-Memory, siehe vr_overlay.py)
 from corner_db import CORNER_SECTIONS  # 0.2.38: echte Kurvennamen (Basis: SealHUD, MIT)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QIcon, QPixmap, QDesktopServices, QShortcut, QKeySequence, QFont, QFontMetricsF, QPainterPath, QImage
 
-APP_VERSION = "0.4.4.3 Beta"
+APP_VERSION = "0.4.4.4 Beta"
 AUTO_SWITCH_DEBOUNCE_SAMPLES = 20  # 0.5.9.24: ~2s bei 10 Hz, bevor ein Strecken-/Fahrzeugwechsel als real gilt
 APP_DIR = Path(__file__).resolve().parent
 
@@ -454,6 +454,7 @@ HOTKEY_ACTIONS = [
     ("brake_coach", "Kurven-Coach"),
     ("corner_overlay", "Kurven-Namen-Overlay"),
     ("vr_arrange", "VR: Overlays anordnen"),
+    ("vr_recenter", "VR: Overlays zur Blickrichtung"),
 ]
 DEFAULT_HOTKEYS = {
     "tire_overlay": "F6", "auto_bestlap": "F7", "record": "F8", "snapshot": "F9",
@@ -461,6 +462,7 @@ DEFAULT_HOTKEYS = {
     "overlay": "F10", "live_coach": "F11", "brake_coach": "F12",
     "corner_overlay": "F5",
     "vr_arrange": "F4",
+    "vr_recenter": "F2",
 }
 HOTKEY_ACTION_KEYS = [a for a, _label in HOTKEY_ACTIONS]
 SUPPORTED_HOTKEY_KEYS = [f"F{i}" for i in range(1, 25)] + [str(d) for d in range(10)]
@@ -5229,6 +5231,10 @@ class Main(QMainWindow):
         self.act_vr_arrange.setCheckable(True)
         self.act_vr_arrange.setChecked(False)
         self.act_vr_arrange.toggled.connect(self.toggle_vr_arrange)
+        # 0.4.4.4: Alle VR-Tafeln vor die aktuelle Blickrichtung richten
+        # (z. B. direkt nach der VR-Neuzentrierung in Virtual Desktop).
+        self.act_vr_recenter = _ov.addAction("VR: Overlays zur Blickrichtung ausrichten")
+        self.act_vr_recenter.triggered.connect(self.vr_recenter)
         _ov_toggle("Bremstemperaturen (inkl. Verschleiß-Schätzung)", self.toggle_brake_overlay, "brake_overlay_window")
         _ov_toggle("Kraftstoff", self.toggle_fuel_overlay, "fuel_overlay_window")
         _ov_toggle("Kurven-Namen", self.toggle_corner_name_overlay, "corner_name_overlay_window")  # 0.2.41: ins Overlays-Menue verschoben (war unter Mehr)
@@ -7591,6 +7597,39 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
                 self.vr_tilt_step(attr, dp, dy)
                 return
 
+    def vr_recenter(self):
+        """0.4.4.4: Alle VR-Tafeln vor die aktuelle Blickrichtung richten.
+        Nach einer VR-Neuzentrierung (Virtual Desktop) bleiben die Tafeln
+        sonst raumfest stehen und mussten einzeln verschoben werden. Der
+        VR-Layer verankert alle Slot-Posen neu auf die Kopf-Pose des
+        naechsten Frames: Gierwinkel + X/Z-Position folgen der Blickrichtung,
+        Hoehe, Abstaende und Kippungen bleiben, wie eingestellt."""
+        b = getattr(self, "vr_board", None)
+        if b is None:
+            try:
+                self.log.append("VR-Ausrichtung: VR-Spiegel ist nicht aktiv.")
+            except Exception:
+                pass
+            return
+        try:
+            if b.request_recenter():
+                self.log.append("VR-Ausrichtung: Tafeln werden vor die aktuelle Blickrichtung gesetzt (Höhe und Abstände bleiben).")
+            else:
+                self.log.append("VR-Ausrichtung: Shared Memory nicht offen - VR-Overlay einschalten und erneut versuchen.")
+        except Exception as e:
+            try:
+                self.log.append(f"VR-Ausrichtung fehlgeschlagen: {e}")
+            except Exception:
+                pass
+
+    def vr_recenter_hotkey(self):
+        # 0.4.4.4: Standard F2, gegen Tastendruck-Doppelung gesichert.
+        now = datetime.now().timestamp()
+        if now - getattr(self, "last_vr_recenter_ts", 0.0) < 0.8:
+            return
+        self.last_vr_recenter_ts = now
+        self.vr_recenter()
+
     def toggle_vr_arrange(self, on=None):
         if on is None:
             on = not bool(getattr(self, "_vr_arrange", False))
@@ -8532,6 +8571,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             ("shortcut_live_coach", "live_coach", self.toggle_live_coach_hotkey),
             ("shortcut_brake_coach", "brake_coach", self.toggle_brake_coach_hotkey),
             ("shortcut_corner_overlay", "corner_overlay", self.toggle_corner_name_overlay),
+            ("shortcut_vr_recenter", "vr_recenter", self.vr_recenter_hotkey),
         ]
         for attr, action, handler in bindings:
             sc = QShortcut(QKeySequence(self.hotkey_config.get(action, DEFAULT_HOTKEYS[action])), self)
@@ -8674,6 +8714,7 @@ $all | Where-Object { $_.Name -or $_.DeviceID } | ConvertTo-Json -Depth 3
             "brake_coach": self.toggle_brake_coach_hotkey,
             "corner_overlay": self.toggle_corner_name_overlay,
             "vr_arrange": self.toggle_vr_arrange,
+            "vr_recenter": self.vr_recenter_hotkey,
         }
         # 0.4.2.2: Strg+Alt+Ziffer reserviert fuer die VR-Overlay-Auswahl -
         # Ziffern-Aktionen feuern dann nicht doppelt.
